@@ -1,3 +1,4 @@
+import asyncio
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -51,6 +52,12 @@ async def health_check():
 
 
 def main():
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     uvicorn.run(
         "backend.main:app",
         host=settings.HOST,
