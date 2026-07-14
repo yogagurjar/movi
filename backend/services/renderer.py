@@ -74,8 +74,6 @@ def render_video(
 
         codec = settings.OUTPUT_CODEC if settings.GPU_ENABLED else "libx264"
         pixel_fmt = "p010le" if settings.GPU_ENABLED else "yuv420p"
-        gpu_args = ["-preset", "p2", "-tune", "hq", "-rc", "vbr", "-cq", str(settings.OUTPUT_CRF)]
-        cpu_args = ["-preset", "medium", "-crf", str(settings.OUTPUT_CRF)]
 
         cmd = [
             "ffmpeg",
@@ -88,20 +86,21 @@ def render_video(
             "-pix_fmt", pixel_fmt,
             "-r", str(settings.OUTPUT_FPS),
             "-s", f"{settings.OUTPUT_WIDTH}x{settings.OUTPUT_HEIGHT}",
-            *(["-b:v", "20M"] if settings.GPU_ENABLED else ["-crf", str(settings.OUTPUT_CRF)]),
-            *gpu_args if settings.GPU_ENABLED else cpu_args,
+        ]
+
+        if settings.GPU_ENABLED:
+            cmd.extend(["-preset", "p2", "-tune", "hq", "-rc", "vbr", "-cq", str(settings.OUTPUT_CRF)])
+            cmd.extend(["-b:v", "20M"])
+        else:
+            cmd.extend(["-preset", "medium", "-crf", str(settings.OUTPUT_CRF)])
+
+        cmd.extend([
             "-c:a", settings.AUDIO_CODEC,
             "-b:a", "192k",
             "-shortest",
             "-movflags", "+faststart",
             str(output_path),
-        ]
-
-        if not settings.GPU_ENABLED:
-            cmd.remove("-p2")
-            cmd.remove("-hq")
-            cmd.remove("-vbr")
-            cmd.remove("-cq")
+        ])
 
         logger.info("FFmpeg command: %s", " ".join(str(c) for c in cmd))
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
@@ -138,9 +137,10 @@ def _render_segment(movie_path: Path, seg: TimelineSegment, output_path: Path):
         "-c:v", codec,
         "-pix_fmt", pixel_fmt,
         "-r", str(settings.OUTPUT_FPS),
-        *(["-preset", "p2", "-rc", "vbr", "-cq", str(settings.OUTPUT_CRF)] if settings.GPU_ENABLED else []),
-        str(output_path),
     ]
+    if settings.GPU_ENABLED:
+        cmd.extend(["-preset", "p2", "-rc", "vbr", "-cq", str(settings.OUTPUT_CRF)])
+    cmd.append(str(output_path))
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
