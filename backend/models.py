@@ -19,9 +19,10 @@ class JobStatus(str, Enum):
 
 
 class ProcessRequest(BaseModel):
-    movie_url: str = Field(..., description="Google Drive URL for the movie file")
-    voiceover_url: str = Field(..., description="Google Drive URL for the voiceover audio file")
+    movie_url: str = Field(..., description="Google Drive URL OR local file path for the movie")
+    voiceover_url: str = Field(..., description="Google Drive URL OR local file path for the voiceover")
     webhook_url: Optional[str] = Field(None, description="Optional callback URL on completion")
+    use_local_paths: bool = Field(False, description="If True, movie_url/voiceover_url are treated as local file paths")
 
 
 class ProcessResponse(BaseModel):

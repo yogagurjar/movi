@@ -38,17 +38,12 @@ def _load_clip():
         settings.CLIP_PRETRAINED,
         _device,
     )
-    result = open_clip.create_model_and_transforms(
+    _clip_model, _clip_preprocess = open_clip.create_model_and_transforms(
         settings.CLIP_MODEL_NAME,
         pretrained=settings.CLIP_PRETRAINED,
         device=_device,
-    )
-    _clip_model = result[0]
-    _clip_preprocess = result[1]
-    if len(result) >= 3:
-        _clip_tokenizer = result[2]
-    else:
-        _clip_tokenizer = open_clip.get_tokenizer(settings.CLIP_MODEL_NAME)
+    )[:2]
+    _clip_tokenizer = open_clip.get_tokenizer(settings.CLIP_MODEL_NAME)
     _clip_model.eval()
 
 

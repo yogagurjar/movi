@@ -19,6 +19,7 @@ async def process_gdrive(request: ProcessRequest):
         movie_url=request.movie_url,
         voiceover_url=request.voiceover_url,
         webhook_url=request.webhook_url,
+        use_local_paths=request.use_local_paths,
     )
     return response
 

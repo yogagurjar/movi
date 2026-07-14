@@ -2,6 +2,7 @@ import json
 import logging
 import time
 import uuid
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -114,7 +115,7 @@ def _cleanup_old_jobs():
         logger.info("Cleaned up job %s, free space: %.1f%%", jid, disk.free_percent)
 
 
-def _run_pipeline(job_id: str, movie_url: str, voiceover_url: str):
+def _run_pipeline(job_id: str, movie_url: str, voiceover_url: str, use_local_paths: bool = False):
     job = _jobs.get(job_id)
     if not job:
         return
@@ -132,9 +133,18 @@ def _run_pipeline(job_id: str, movie_url: str, voiceover_url: str):
     start_time = time.time()
 
     try:
-        _update_job(job_id, JobStatus.DOWNLOADING, "Downloading movie and voiceover...", 5.0)
-        movie_path = download_from_gdrive(movie_url, job_dir, "movie")
-        voiceover_path = download_from_gdrive(voiceover_url, job_dir, "voiceover")
+        if use_local_paths:
+            _update_job(job_id, JobStatus.DOWNLOADING, "Using local files...", 5.0)
+            movie_path = Path(movie_url)
+            voiceover_path = Path(voiceover_url)
+            if not movie_path.exists():
+                raise FileNotFoundError(f"Movie not found: {movie_path}")
+            if not voiceover_path.exists():
+                raise FileNotFoundError(f"Voiceover not found: {voiceover_path}")
+        else:
+            _update_job(job_id, JobStatus.DOWNLOADING, "Downloading movie and voiceover...", 5.0)
+            movie_path = download_from_gdrive(movie_url, job_dir, "movie")
+            voiceover_path = download_from_gdrive(voiceover_url, job_dir, "voiceover")
         disk = _get_disk_info()
         logger.info("Disk after download: %.1f%% free", disk.free_percent)
 
@@ -200,7 +210,7 @@ def _update_job(job_id: str, status: JobStatus, stage: str, progress: float):
     _persist_job(job_id)
 
 
-def create_and_start_job(movie_url: str, voiceover_url: str, webhook_url: Optional[str] = None) -> ProcessResponse:
+def create_and_start_job(movie_url: str, voiceover_url: str, webhook_url: Optional[str] = None, use_local_paths: bool = False) -> ProcessResponse:
     _load_jobs()
     _cleanup_old_jobs()
 
@@ -223,7 +233,7 @@ def create_and_start_job(movie_url: str, voiceover_url: str, webhook_url: Option
     _jobs[job_id] = job
     _persist_job(job_id)
 
-    _executor.submit(_run_pipeline, job_id, movie_url, voiceover_url)
+    _executor.submit(_run_pipeline, job_id, movie_url, voiceover_url, use_local_paths)
 
     return ProcessResponse(
         job_id=job_id,
