@@ -38,11 +38,12 @@ def _load_clip():
         settings.CLIP_PRETRAINED,
         _device,
     )
-    _clip_model, _clip_preprocess, _clip_tokenizer = open_clip.create_model_and_transforms(
+    _clip_model, _clip_preprocess = open_clip.create_model_and_transforms(
         settings.CLIP_MODEL_NAME,
         pretrained=settings.CLIP_PRETRAINED,
         device=_device,
     )
+    _clip_tokenizer = open_clip.get_tokenizer(settings.CLIP_MODEL_NAME)
     _clip_model.eval()
 
 
