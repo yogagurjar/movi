@@ -6,10 +6,21 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/process-gdrive': 'http://localhost:8000',
-      '/status': 'http://localhost:8000',
-      '/download': 'http://localhost:8000',
-      '/output': 'http://localhost:8000',
+      '/process-gdrive': {
+        target: 'https://terminologically-fadlike-jaycee.ngrok-free.dev',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/status': {
+        target: 'https://terminologically-fadlike-jaycee.ngrok-free.dev',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/download': {
+        target: 'https://terminologically-fadlike-jaycee.ngrok-free.dev',
+        changeOrigin: true,
+        secure: false,
+      },
     },
   },
 })

@@ -70,7 +70,7 @@ def _encode_images(image_paths: list[str]) -> np.ndarray:
 
 def _encode_texts(texts: list[str]) -> np.ndarray:
     _load_clip()
-    tokens = _clip_tokenizer(texts, context_length=77).to(_device)
+    tokens = _clip_tokenizer(texts).to(_device)
     with torch.no_grad():
         embeddings = _clip_model.encode_text(tokens)
         embeddings = embeddings / embeddings.norm(dim=-1, keepdim=True)
