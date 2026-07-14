@@ -1,15 +1,7 @@
 import asyncio
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-import nest_asyncio
-nest_asyncio.apply()
-
 import logging
-import uvicorn
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -57,13 +49,17 @@ async def health_check():
 
 
 def main():
-    uvicorn.run(
+    import uvicorn
+    config = uvicorn.Config(
         "backend.main:app",
         host=settings.HOST,
         port=settings.PORT,
-        reload=False,
         log_level="info",
     )
+    server = uvicorn.Server(config)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(server.serve())
 
 
 if __name__ == "__main__":
