@@ -16,8 +16,16 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Movie Recap Generator API")
+    url = None
     if settings.NGROK_ENABLED:
-        start_ngrok()
+        url = start_ngrok()
+    if url:
+        print(f"\n{'='*60}")
+        print(f"  PUBLIC URL: {url}")
+        print(f"{'='*60}\n")
+    else:
+        print(f"\n  Server running at http://0.0.0.0:{settings.PORT}")
+        print(f"  Health: http://localhost:{settings.PORT}/health")
     yield
     if settings.NGROK_ENABLED:
         stop_ngrok()
