@@ -129,15 +129,20 @@ def _nvidia_verify(
                     "presence_penalty": 0,
                     "repetition_penalty": 1,
                 },
-                timeout=30,
+                timeout=60,
             )
             resp.raise_for_status()
             body = resp.json()
             content = body["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
+            import re
+            json_match = re.search(r'\{[^{}]*\}', content)
+            if json_match:
+                parsed = json.loads(json_match.group())
+            else:
+                parsed = {"confidence": 0.0, "reasoning": content.strip()}
             confidence = float(parsed.get("confidence", 0.0))
             reasoning = str(parsed.get("reasoning", ""))
-            results.append((scene_idx, confidence, reasoning))
+            results.append((scene_idx, min(max(confidence, 0.0), 1.0), reasoning))
         except Exception as e:
             logger.warning("NVIDIA API error for scene %d: %s", scene_idx, e)
             results.append((scene_idx, 0.0, f"api_error: {e}"))
