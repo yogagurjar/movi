@@ -8,6 +8,25 @@ from backend.models import SceneInfo
 
 logger = logging.getLogger(__name__)
 
+_FFMPEG_HAS_CUDA: bool | None = None
+
+
+def _ffmpeg_has_cuda() -> bool:
+    global _FFMPEG_HAS_CUDA
+    if _FFMPEG_HAS_CUDA is None:
+        try:
+            result = subprocess.run(["ffmpeg", "-hwaccels"], capture_output=True, text=True, timeout=15)
+            _FFMPEG_HAS_CUDA = "cuda" in result.stdout.lower()
+        except Exception:
+            _FFMPEG_HAS_CUDA = False
+    return _FFMPEG_HAS_CUDA
+
+
+def _hwaccel_flags() -> list[str]:
+    if settings.GPU_ENABLED and _ffmpeg_has_cuda():
+        return ["-hwaccel", "cuda"]
+    return []
+
 
 def _get_video_fps(video_path: Path) -> float:
     cmd = [
@@ -43,6 +62,92 @@ def _scene_to_seconds(scene_time) -> tuple[float, float]:
     return start, end
 
 
+def _pytorch_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: float = 0.5) -> list[SceneInfo]:
+    """
+    GPU-accelerated scene detection matching FFmpeg's histogram-based approach.
+    Uses per-channel histogram SAD on GPU (same metric as FFmpeg's scene filter).
+    Much faster than FFmpeg CPU on Kaggle (uses T4/P100 GPU).
+    """
+    import torch
+    import torchvision.io as io
+    from torchvision.transforms import functional as F
+
+    device = torch.device(settings.TORCH_DEVICE)
+    if device.type != "cuda":
+        return []
+
+    duration = _get_video_duration(video_path)
+    if duration <= 0:
+        return []
+
+    logger.info("Detecting scenes via PyTorch CUDA histogram on %s...", device)
+
+    try:
+        reader = io.VideoReader(str(video_path), "video")
+        meta = reader.get_metadata()
+        vs = meta.get("video", {})
+        fps_val = float(vs.get("fps", [30.0])[0]) if vs.get("fps") else 30.0
+        min_frames = max(1, int(min_scene_len * fps_val))
+        sample_rate = max(1, int(fps_val / 12))
+
+        torch.cuda.empty_cache()
+
+        prev_hist = None
+        times = [0.0]
+        frame_idx = 0
+        last_scene_frame = 0
+
+        for frame_data in reader:
+            img = frame_data['data']
+            pts = float(frame_data['pts'])
+
+            if frame_idx % sample_rate == 0:
+                curr_gpu = img.to(device, non_blocking=True).float()
+                _, h, w = curr_gpu.shape
+
+                if max(h, w) > 240:
+                    scale = 240.0 / max(h, w)
+                    curr_small = F.resize(curr_gpu, [int(h * scale), int(w * scale)], antialias=True)
+                else:
+                    curr_small = curr_gpu
+
+                n_ch = curr_small.shape[0]
+                hists = []
+                for c in range(n_ch):
+                    flat = curr_small[c].reshape(-1)
+                    hist_c = torch.histc(flat, bins=256, min=0, max=255)
+                    hists.append(hist_c / hist_c.sum())
+                curr_hist = torch.stack(hists)
+
+                if prev_hist is not None:
+                    sad = torch.abs(curr_hist - prev_hist).sum().item()
+                    scene_score = sad / (n_ch * 2)
+
+                    if scene_score > threshold and (frame_idx - last_scene_frame) >= min_frames:
+                        if 0.0 < pts < duration:
+                            times.append(pts)
+                            last_scene_frame = frame_idx
+
+                prev_hist = curr_hist
+
+            frame_idx += 1
+
+        times.append(duration)
+
+        scenes = []
+        for i in range(len(times) - 1):
+            s, e = times[i], times[i + 1]
+            if e - s >= min_scene_len:
+                scenes.append(SceneInfo(scene_index=len(scenes), start_time=round(s, 3), end_time=round(e, 3), duration=round(e - s, 3), keyframe_path=None))
+
+        logger.info("PyTorch CUDA histogram detected %d scenes from %d frames (threshold=%.2f)", len(scenes), frame_idx, threshold)
+        return scenes
+
+    except Exception as e:
+        logger.warning("PyTorch scene detection failed: %s", e)
+        return []
+
+
 def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
     scenes_dir.mkdir(parents=True, exist_ok=True)
     fps = _get_video_fps(video_path)
@@ -50,9 +155,7 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
     logger.info("Video: %.1f sec @ %.2f fps", duration, fps)
 
     def _ffmpeg_scenes(use_gpu: bool) -> list[SceneInfo]:
-        cmd = ["ffmpeg"]
-        if use_gpu:
-            cmd += ["-hwaccel", "cuda"]
+        cmd = ["ffmpeg"] + (_hwaccel_flags() if use_gpu else [])
         cmd += ["-i", str(video_path), "-vf", "select='gt(scene,0.3)',showinfo", "-vsync", "vfr", "-f", "null", "-"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if result.returncode != 0:
@@ -76,13 +179,20 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
                 out.append(SceneInfo(scene_index=len(out), start_time=round(s, 3), end_time=round(e, 3), duration=round(e - s, 3), keyframe_path=None))
         return out
 
+    scenes = _pytorch_scenes(video_path)
+    if len(scenes) > 1:
+        logger.info("Detected %d scenes via PyTorch CUDA", len(scenes))
+        save_scenes(scenes, scenes_dir)
+        return scenes
+    logger.warning("PyTorch CUDA gave %d scenes, trying FFmpeg...", len(scenes))
+
     scenes = _ffmpeg_scenes(use_gpu=True)
     if len(scenes) > 1:
         logger.info("Detected %d scenes via FFmpeg GPU", len(scenes))
         save_scenes(scenes, scenes_dir)
         return scenes
 
-    logger.warning("GPU gave %d scenes, retrying CPU FFmpeg...", len(scenes))
+    logger.warning("FFmpeg GPU gave %d scenes, retrying CPU FFmpeg...", len(scenes))
     scenes = _ffmpeg_scenes(use_gpu=False)
     if len(scenes) > 1:
         logger.info("Detected %d scenes via FFmpeg CPU", len(scenes))
@@ -109,36 +219,22 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
 
 def extract_keyframes(video_path: Path, scenes: list[SceneInfo], keyframes_dir: Path) -> list[SceneInfo]:
     keyframes_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Extracting %d keyframes via FFmpeg GPU...", len(scenes))
+    logger.info("Extracting %d keyframes via FFmpeg%s...", len(scenes), " GPU" if settings.GPU_ENABLED else "")
 
     for scene in scenes:
         mid_time = (scene.start_time + scene.end_time) / 2.0
         kf_path = keyframes_dir / f"scene_{scene.scene_index:05d}.jpg"
 
-        cmd = [
-            "ffmpeg", "-hwaccel", "cuda",
-            "-ss", str(mid_time),
-            "-i", str(video_path),
-            "-vframes", "1",
-            "-q:v", "2",
-            "-y",
-            str(kf_path),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        cmd = ["ffmpeg"] + _hwaccel_flags()
+        cmd += ["-ss", str(mid_time), "-i", str(video_path), "-vframes", "1", "-q:v", "2", "-y", str(kf_path)]
+        subprocess.run(cmd, capture_output=True, text=True)
 
         if kf_path.exists() and kf_path.stat().st_size > 0:
             scene.keyframe_path = str(kf_path)
         else:
             retry_time = scene.start_time + 0.1
-            retry_cmd = [
-                "ffmpeg", "-hwaccel", "cuda",
-                "-ss", str(retry_time),
-                "-i", str(video_path),
-                "-vframes", "1",
-                "-q:v", "2",
-                "-y",
-                str(kf_path),
-            ]
+            retry_cmd = ["ffmpeg"] + _hwaccel_flags()
+            retry_cmd += ["-ss", str(retry_time), "-i", str(video_path), "-vframes", "1", "-q:v", "2", "-y", str(kf_path)]
             subprocess.run(retry_cmd, capture_output=True, text=True)
             if kf_path.exists() and kf_path.stat().st_size > 0:
                 scene.keyframe_path = str(kf_path)

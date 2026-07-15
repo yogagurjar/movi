@@ -9,6 +9,25 @@ from backend.models import MatchResult, TimelineSegment
 
 logger = logging.getLogger(__name__)
 
+_FFMPEG_HAS_CUDA: bool | None = None
+
+
+def _probe_ffmpeg_cuda() -> bool:
+    global _FFMPEG_HAS_CUDA
+    if _FFMPEG_HAS_CUDA is None:
+        try:
+            result = subprocess.run(["ffmpeg", "-hwaccels"], capture_output=True, text=True, timeout=15)
+            _FFMPEG_HAS_CUDA = "cuda" in result.stdout.lower()
+        except Exception:
+            _FFMPEG_HAS_CUDA = False
+    return _FFMPEG_HAS_CUDA
+
+
+def _fwaccel_flags() -> list[str]:
+    if settings.GPU_ENABLED and _probe_ffmpeg_cuda():
+        return ["-hwaccel", "cuda"]
+    return []
+
 
 def _clamp_speed(required: float) -> float:
     low = 1.0 - settings.SPEED_MAX_DELTA
@@ -78,15 +97,14 @@ def render_video(
         cmd = [
             "ffmpeg",
             "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_path),
-            "-i", str(voiceover_path),
+        ]
+        cmd.extend(_fwaccel_flags())
+        cmd.extend(["-f", "concat", "-safe", "0", "-i", str(concat_path), "-i", str(voiceover_path),
             "-c:v", codec,
             "-pix_fmt", pixel_fmt,
             "-r", str(settings.OUTPUT_FPS),
             "-s", f"{settings.OUTPUT_WIDTH}x{settings.OUTPUT_HEIGHT}",
-        ]
+        ])
 
         if settings.GPU_ENABLED:
             cmd.extend(["-preset", "p2", "-tune", "hq", "-rc", "vbr", "-cq", str(settings.OUTPUT_CRF)])
@@ -128,8 +146,9 @@ def _render_segment(movie_path: Path, seg: TimelineSegment, output_path: Path):
     cmd = [
         "ffmpeg",
         "-y",
-        "-i", str(movie_path),
-        "-vf",
+    ]
+    cmd.extend(_fwaccel_flags())
+    cmd.extend(["-i", str(movie_path), "-vf",
         f"trim=start={trim_start}:end={trim_end},setpts={setpts},"
         f"scale={settings.OUTPUT_WIDTH}:{settings.OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,"
         f"pad={settings.OUTPUT_WIDTH}:{settings.OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2",
@@ -139,7 +158,7 @@ def _render_segment(movie_path: Path, seg: TimelineSegment, output_path: Path):
         "-r", str(settings.OUTPUT_FPS),
     ]
     if settings.GPU_ENABLED:
-        cmd.extend(["-preset", "p2", "-rc", "vbr", "-cq", str(settings.OUTPUT_CRF)])
+        cmd.extend(["-preset", "p2", "-tune", "hq", "-rc", "vbr", "-cq", str(settings.OUTPUT_CRF), "-b:v", "20M"])
     cmd.append(str(output_path))
 
     result = subprocess.run(cmd, capture_output=True, text=True)
