@@ -52,8 +52,11 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
     def _run_ffmpeg_scenedetect(hwaccel: str = "") -> list[SceneInfo]:
         cmd = ["ffmpeg"]
         if hwaccel:
-            cmd += ["-hwaccel", hwaccel]
-        cmd += ["-i", str(video_path), "-vf", "select='gt(scene,0.3)',showinfo", "-vsync", "vfr", "-f", "null", "-"]
+            cmd += ["-hwaccel", hwaccel, "-hwaccel_output_format", hwaccel]
+            vf = "hwdownload,format=nv12,select='gt(scene,0.3)',showinfo"
+        else:
+            vf = "select='gt(scene,0.3)',showinfo"
+        cmd += ["-i", str(video_path), "-vf", vf, "-vsync", "vfr", "-f", "null", "-"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             return []
