@@ -66,15 +66,18 @@ def _encode_images(image_paths: list[str]) -> np.ndarray:
     with torch.no_grad():
         embeddings = _clip_model.encode_image(batch)
         embeddings = embeddings / embeddings.norm(dim=-1, keepdim=True)
+    logger.info("Image embeddings shape: %s, range: %.4f-%.4f", embeddings.shape, embeddings.min().item(), embeddings.max().item())
     return embeddings.cpu().numpy()
 
 
 def _encode_texts(texts: list[str]) -> np.ndarray:
     _load_clip()
     tokens = _clip_tokenizer(texts).to(_device)
+    logger.info("Text tokens shape: %s", tokens.shape if hasattr(tokens, 'shape') else type(tokens))
     with torch.no_grad():
         embeddings = _clip_model.encode_text(tokens)
         embeddings = embeddings / embeddings.norm(dim=-1, keepdim=True)
+    logger.info("Text embeddings shape: %s, range: %.4f-%.4f, has_nan=%s", embeddings.shape, embeddings.min().item(), embeddings.max().item(), bool(torch.isnan(embeddings).any()))
     return embeddings.cpu().numpy()
 
 
