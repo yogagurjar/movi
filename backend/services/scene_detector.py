@@ -50,22 +50,16 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
     duration = _get_video_duration(video_path)
     logger.info("Video: %.1f sec @ %.2f fps", duration, fps)
 
-    logger.info("Detecting scenes with PySceneDetect...")
+    logger.info("Detecting scenes with PySceneDetect ContentDetector...")
     try:
-        from scenedetect import detect
-        from scenedetect.detectors import AdaptiveDetector
-
-        scene_list = detect(
-            str(video_path),
-            AdaptiveDetector(adaptive_threshold=settings.SCENE_DETECTION_THRESHOLD),
-        )
-    except Exception as e:
-        logger.warning("AdaptiveDetector failed (%s), falling back to ContentDetector", e)
         from scenedetect import detect, ContentDetector
         scene_list = detect(
             str(video_path),
             ContentDetector(threshold=settings.SCENE_DETECTION_THRESHOLD),
         )
+    except Exception as e:
+        logger.warning("ContentDetector failed (%s), using fallback", e)
+        scene_list = []
 
     if not scene_list:
         scene_list = [([0.0], [duration])]

@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     CLIP_PRETRAINED: str = "laion2b_s34b_b79k"
     CLIP_BATCH_SIZE: int = 64
 
+    QWEN_MODEL_NAME: str = "Qwen/Qwen2.5-VL-3B-Instruct"
+
     CONFIDENCE_ACCEPT: float = 0.85
     CONFIDENCE_FALLBACK: float = 0.50
     CONFIDENCE_MIN: float = 0.30

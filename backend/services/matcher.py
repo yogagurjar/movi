@@ -1,9 +1,7 @@
-import base64
 import json
 import logging
 from pathlib import Path
 
-import httpx
 import numpy as np
 import torch
 from sklearn.metrics.pairwise import cosine_similarity
@@ -23,6 +21,8 @@ logger = logging.getLogger(__name__)
 _clip_model = None
 _clip_preprocess = None
 _clip_tokenizer = None
+_qwen_model = None
+_qwen_processor = None
 _device = None
 
 
@@ -78,76 +78,100 @@ def _encode_texts(texts: list[str]) -> np.ndarray:
     return embeddings.cpu().numpy()
 
 
-def _nvidia_verify(
+def _load_qwen():
+    global _qwen_model, _qwen_processor, _device
+    if _qwen_model is not None:
+        return
+    _device = torch.device(settings.TORCH_DEVICE)
+    logger.info("Loading Qwen2.5-VL-3B-Instruct with 4-bit quantization on %s...", _device)
+    from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+    )
+    _qwen_model = AutoModelForVision2Seq.from_pretrained(
+        settings.QWEN_MODEL_NAME,
+        quantization_config=bnb_config,
+        device_map="auto",
+        torch_dtype=torch.float16,
+    )
+    _qwen_processor = AutoProcessor.from_pretrained(settings.QWEN_MODEL_NAME)
+
+
+def _resize_for_qwen(image_path: str, max_size: int = 1024):
+    import PIL.Image
+    img = PIL.Image.open(image_path).convert("RGB")
+    w, h = img.size
+    if w > max_size or h > max_size:
+        ratio = min(max_size / w, max_size / h)
+        img = img.resize((int(w * ratio), int(h * ratio)), PIL.Image.LANCZOS)
+    return img
+
+
+def _qwen_verify(
     voice_text: str,
     candidate_scenes: list[tuple[int, str]],
 ) -> list[tuple[int, float, str]]:
+    _load_qwen()
     if not candidate_scenes:
         return []
     results: list[tuple[int, float, str]] = []
     for scene_idx, kf_path in candidate_scenes:
         try:
-            with open(kf_path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode("utf-8")
-            data_url = f"data:image/jpeg;base64,{b64}"
-        except Exception as e:
-            logger.warning("Failed to encode keyframe %s: %s", kf_path, e)
-            results.append((scene_idx, 0.0, "image_load_error"))
-            continue
-
-        prompt = (
-            f"On a scale of 0.0 to 1.0, how well does this image match "
-            f"the following description? Only respond with a JSON object: "
-            f'{{"confidence": <float>, "reasoning": "<brief explanation>"}}\n\n'
-            f"Description: {voice_text}"
-        )
-
-        try:
-            resp = httpx.post(
-                f"{settings.NVIDIA_API_BASE_URL}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.NVIDIA_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": settings.NVIDIA_MODEL,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": data_url},
-                                },
-                            ],
-                        }
-                    ],
-                    "max_tokens": 2048,
-                    "temperature": 0.60,
-                    "top_p": 0.95,
-                    "top_k": 20,
-                    "presence_penalty": 0,
-                    "repetition_penalty": 1,
-                },
-                timeout=60,
+            img = _resize_for_qwen(kf_path)
+            prompt = (
+                f"On a scale of 0.0 to 1.0, how well does this image match "
+                f"the following description? Only respond with a JSON object: "
+                f'{{"confidence": <float>, "reasoning": "<brief explanation>"}}\n\n'
+                f"Description: {voice_text}"
             )
-            resp.raise_for_status()
-            body = resp.json()
-            content = body["choices"][0]["message"]["content"]
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": img},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ]
+            text = _qwen_processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            from qwen_vl_utils import process_vision_info
+            image_inputs, _ = process_vision_info(messages)
+            inputs = _qwen_processor(
+                text=[text],
+                images=image_inputs,
+                padding=True,
+                return_tensors="pt",
+            ).to(_device)
+            with torch.no_grad():
+                generated_ids = _qwen_model.generate(
+                    **inputs,
+                    max_new_tokens=150,
+                    temperature=0.1,
+                    do_sample=False,
+                )
+            generated_ids_trimmed = [
+                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            ]
+            output_text = _qwen_processor.batch_decode(
+                generated_ids_trimmed,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )[0]
             import re
-            json_match = re.search(r'\{[^{}]*\}', content)
+            json_match = re.search(r'\{[^{}]*\}', output_text)
             if json_match:
                 parsed = json.loads(json_match.group())
+                confidence = float(parsed.get("confidence", 0.0))
+                reasoning = str(parsed.get("reasoning", ""))
+                results.append((scene_idx, min(max(confidence, 0.0), 1.0), reasoning))
             else:
-                parsed = {"confidence": 0.0, "reasoning": content.strip()}
-            confidence = float(parsed.get("confidence", 0.0))
-            reasoning = str(parsed.get("reasoning", ""))
-            results.append((scene_idx, min(max(confidence, 0.0), 1.0), reasoning))
+                results.append((scene_idx, 0.0, f"no_json: {output_text[:100]}"))
         except Exception as e:
-            logger.warning("NVIDIA API error for scene %d: %s", scene_idx, e)
-            results.append((scene_idx, 0.0, f"api_error: {e}"))
-
+            logger.warning("Qwen VL error for scene %d: %s", scene_idx, e)
+            results.append((scene_idx, 0.0, f"qwen_error: {e}"))
     return results
 
 
@@ -202,28 +226,28 @@ def match_voice_to_scenes(
             best = max(raw_candidates, key=lambda x: x[1])
             candidates = [ClipMatchCandidate(scene_index=best[0], similarity=round(best[1], 4))]
 
-        nvidia_input = [
+        vision_input = [
             (c.scene_index, kf_paths[scene_indices.index(c.scene_index)])
             for c in candidates
         ]
-        nvidia_results = _nvidia_verify(seg.text, nvidia_input)
+        qwen_results = _qwen_verify(seg.text, vision_input)
 
-        nvidia_map: dict[int, tuple[float, str]] = {}
-        for si, conf, reason in nvidia_results:
-            nvidia_map[si] = (conf, reason)
+        qwen_map: dict[int, tuple[float, str]] = {}
+        for si, conf, reason in qwen_results:
+            qwen_map[si] = (conf, reason)
 
         best_candidate: int | None = None
         best_confidence: float = 0.0
         best_reasoning: str | None = None
         best_clip_sim: float = 0.0
-        nvidia_all_failed = all(nvidia_map.get(c.scene_index, (0.0, ""))[0] == 0.0 for c in candidates)
+        qwen_all_failed = all(qwen_map.get(c.scene_index, (0.0, ""))[0] == 0.0 for c in candidates)
 
         for c in candidates:
-            nv_conf, nv_reason = nvidia_map.get(c.scene_index, (0.0, ""))
-            if nvidia_all_failed:
+            qv_conf, qv_reason = qwen_map.get(c.scene_index, (0.0, ""))
+            if qwen_all_failed:
                 final_conf = c.similarity
             else:
-                final_conf = (c.similarity * 0.3) + (nv_conf * 0.7)
+                final_conf = (c.similarity * 0.3) + (qv_conf * 0.7)
 
             if c.scene_index in used_scenes and final_conf < settings.SCENE_REUSE_CONFIDENCE:
                 continue
@@ -232,16 +256,16 @@ def match_voice_to_scenes(
                 if best_candidate is None or final_conf > best_confidence:
                     best_candidate = c.scene_index
                     best_confidence = final_conf
-                    best_reasoning = nv_reason
+                    best_reasoning = qv_reason
                     best_clip_sim = c.similarity
 
         if best_candidate is None:
             for c in candidates:
-                nv_conf, nv_reason = nvidia_map.get(c.scene_index, (0.0, ""))
-                if nvidia_all_failed:
+                qv_conf, qv_reason = qwen_map.get(c.scene_index, (0.0, ""))
+                if qwen_all_failed:
                     final_conf = c.similarity
                 else:
-                    final_conf = (c.similarity * 0.3) + (nv_conf * 0.7)
+                    final_conf = (c.similarity * 0.3) + (qv_conf * 0.7)
 
                 if c.scene_index in used_scenes:
                     continue
@@ -250,7 +274,7 @@ def match_voice_to_scenes(
                     if best_candidate is None or final_conf > best_confidence:
                         best_candidate = c.scene_index
                         best_confidence = final_conf
-                        best_reasoning = nv_reason
+                        best_reasoning = qv_reason
                         best_clip_sim = c.similarity
 
         if best_candidate is None and candidates:
@@ -261,9 +285,9 @@ def match_voice_to_scenes(
 
         if vi < 5 or (vi % 50 == 0):
             logger.info(
-                "Match[%d]: top_sim=%.4f, candidates=%d, nvidia_ok=%s, accepted=%s, conf=%.4f, text='%s'",
+                "Match[%d]: top_sim=%.4f, candidates=%d, qwen_ok=%s, accepted=%s, conf=%.4f, text='%s'",
                 vi, candidates[0].similarity if candidates else 0,
-                len(candidates), not nvidia_all_failed,
+                len(candidates), not qwen_all_failed,
                 best_candidate is not None, best_confidence,
                 seg.text[:60],
             )
