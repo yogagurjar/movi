@@ -267,10 +267,6 @@ def match_voice_to_scenes(
                 best_candidate is not None, best_confidence,
                 seg.text[:60],
             )
-            "Voice seg %d: %d candidates, nvidia_ok=%s, matched=%s, best_conf=%.3f, text='%s'",
-            seg.segment_index, len(candidates), not nvidia_all_failed,
-            best_candidate is not None, best_confidence, seg.text[:50],
-        )
 
         accepted = best_candidate is not None
         if accepted:
