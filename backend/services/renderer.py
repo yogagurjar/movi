@@ -156,7 +156,7 @@ def _render_segment(movie_path: Path, seg: TimelineSegment, output_path: Path):
         "-c:v", codec,
         "-pix_fmt", pixel_fmt,
         "-r", str(settings.OUTPUT_FPS),
-    ]
+    ])
     if settings.GPU_ENABLED:
         cmd.extend(["-preset", "p2", "-tune", "hq", "-rc", "vbr", "-cq", str(settings.OUTPUT_CRF), "-b:v", "20M"])
     cmd.append(str(output_path))
