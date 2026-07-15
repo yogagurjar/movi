@@ -52,17 +52,16 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
     def _ffmpeg_scenes(use_gpu: bool) -> list[SceneInfo]:
         cmd = ["ffmpeg"]
         if use_gpu:
-            cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-        cmd += ["-i", str(video_path)]
-        if use_gpu:
-            vf = "hwdownload,format=nv12,select='gt(scene,0.3)',showinfo"
-        else:
-            vf = "select='gt(scene,0.3)',showinfo"
-        cmd += ["-vf", vf, "-vsync", "vfr", "-f", "null", "-"]
+            cmd += ["-hwaccel", "cuda"]
+        cmd += ["-i", str(video_path), "-vf", "select='gt(scene,0.3)',showinfo", "-vsync", "vfr", "-f", "null", "-"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if result.returncode != 0:
+            logger.warning("FFmpeg%s failed: %s", " GPU" if use_gpu else "", result.stderr[:300])
             return []
         times = [0.0]
+        stderr_preview = result.stderr[:500]
+        if "pts_time" not in stderr_preview:
+            logger.warning("No pts_time in FFmpeg%s output, threshold may be too high", " GPU" if use_gpu else "")
         for line in result.stderr.split("\n"):
             m = re.search(r"pts_time:(\d+\.\d+)", line)
             if m:
