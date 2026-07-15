@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 
@@ -75,9 +76,22 @@ def transcribe_audio(audio_path: Path) -> TranscriptionResult:
         duration_sec=duration,
     )
 
+    _save_transcript(result, audio_path.parent / "transcript.json")
     logger.info(
         "Transcription complete: %d segments, %.1f sec",
         len(seg_list),
         duration,
     )
     return result
+
+
+def _save_transcript(result: TranscriptionResult, path: Path):
+    path.write_text(json.dumps(result.model_dump(), indent=2, default=str))
+
+
+def load_transcript(transcript_dir: Path) -> TranscriptionResult | None:
+    path = transcript_dir / "transcript.json"
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text())
+    return TranscriptionResult(**data)

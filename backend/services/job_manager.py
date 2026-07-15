@@ -21,8 +21,8 @@ from backend.services.audio_extractor import convert_audio_to_wav, extract_audio
 from backend.services.downloader import download_from_gdrive, cleanup_job_files
 from backend.services.matcher import match_voice_to_scenes
 from backend.services.renderer import build_timeline, render_video
-from backend.services.scene_detector import detect_scenes, extract_keyframes
-from backend.services.transcriber import transcribe_audio
+from backend.services.scene_detector import detect_scenes, extract_keyframes, load_scenes
+from backend.services.transcriber import transcribe_audio, load_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -133,58 +133,104 @@ def _run_pipeline(job_id: str, movie_url: str, voiceover_url: str, use_local_pat
     start_time = time.time()
 
     try:
-        if use_local_paths:
-            _update_job(job_id, JobStatus.DOWNLOADING, "Using local files...", 5.0)
-            movie_path = Path(movie_url)
-            voiceover_path = Path(voiceover_url)
-            if not movie_path.exists():
-                raise FileNotFoundError(f"Movie not found: {movie_path}")
-            if not voiceover_path.exists():
-                raise FileNotFoundError(f"Voiceover not found: {voiceover_path}")
+        checkpoint = _did_checkpoint(job_id, "downloaded")
+        if not checkpoint:
+            if use_local_paths:
+                _update_job(job_id, JobStatus.DOWNLOADING, "Using local files...", 5.0)
+                movie_path = Path(movie_url)
+                voiceover_path = Path(voiceover_url)
+                if not movie_path.exists():
+                    raise FileNotFoundError(f"Movie not found: {movie_path}")
+                if not voiceover_path.exists():
+                    raise FileNotFoundError(f"Voiceover not found: {voiceover_path}")
+            else:
+                _update_job(job_id, JobStatus.DOWNLOADING, "Downloading movie and voiceover...", 5.0)
+                movie_path = download_from_gdrive(movie_url, job_dir, "movie")
+                voiceover_path = download_from_gdrive(voiceover_url, job_dir, "voiceover")
+            _checkpoint(job_id, "downloaded")
         else:
-            _update_job(job_id, JobStatus.DOWNLOADING, "Downloading movie and voiceover...", 5.0)
-            movie_path = download_from_gdrive(movie_url, job_dir, "movie")
-            voiceover_path = download_from_gdrive(voiceover_url, job_dir, "voiceover")
+            logger.info("Checkpoint: download already complete, skipping")
+            movie_path = next(job_dir.glob("movie*"), None)
+            voiceover_path = next(job_dir.glob("voiceover*"), None)
+            if not movie_path or not voiceover_path:
+                raise FileNotFoundError("Checkpoint files missing, restart required")
         disk = _get_disk_info()
         logger.info("Disk after download: %.1f%% free", disk.free_percent)
 
-        movie_ext = movie_path.suffix.lower()
-        if movie_ext in (".mp4", ".mkv", ".avi", ".mov", ".webm"):
-            _update_job(job_id, JobStatus.EXTRACTING_AUDIO, "Extracting movie audio...", 10.0)
-            movie_audio = extract_audio_from_video(movie_path, transcript_dir / "movie_audio")
+        checkpoint = _did_checkpoint(job_id, "audio_extracted")
+        if not checkpoint:
+            movie_ext = movie_path.suffix.lower()
+            if movie_ext in (".mp4", ".mkv", ".avi", ".mov", ".webm"):
+                _update_job(job_id, JobStatus.EXTRACTING_AUDIO, "Extracting movie audio...", 10.0)
+                movie_audio = extract_audio_from_video(movie_path, transcript_dir / "movie_audio")
+            else:
+                movie_audio = convert_audio_to_wav(movie_path, transcript_dir / "movie_audio")
+
+            _update_job(job_id, JobStatus.EXTRACTING_AUDIO, "Converting voiceover...", 12.0)
+            voice_wav = convert_audio_to_wav(voiceover_path, transcript_dir / "voiceover")
+            _checkpoint(job_id, "audio_extracted")
         else:
-            movie_audio = convert_audio_to_wav(movie_path, transcript_dir / "movie_audio")
+            logger.info("Checkpoint: audio already extracted, skipping")
+            voice_wav = transcript_dir / "voiceover.wav"
 
-        _update_job(job_id, JobStatus.EXTRACTING_AUDIO, "Converting voiceover...", 12.0)
-        voice_wav = convert_audio_to_wav(voiceover_path, transcript_dir / "voiceover")
+        checkpoint = _did_checkpoint(job_id, "transcribed")
+        if not checkpoint:
+            _update_job(job_id, JobStatus.TRANSCRIBING, "Transcribing voiceover...", 15.0)
+            voice_transcript = transcribe_audio(voice_wav)
+            stats.total_voice_segments = len(voice_transcript.segments)
+            logger.info("Voiceover: %d segments, %.1f sec", stats.total_voice_segments, voice_transcript.duration_sec)
+            _checkpoint(job_id, "transcribed")
+        else:
+            logger.info("Checkpoint: transcription already complete, skipping")
+            voice_transcript = load_transcript(transcript_dir)
 
-        _update_job(job_id, JobStatus.TRANSCRIBING, "Transcribing voiceover...", 15.0)
-        voice_transcript = transcribe_audio(voice_wav)
-        stats.total_voice_segments = len(voice_transcript.segments)
-        logger.info("Voiceover: %d segments, %.1f sec", stats.total_voice_segments, voice_transcript.duration_sec)
+        checkpoint = _did_checkpoint(job_id, "scenes_detected")
+        if not checkpoint:
+            _update_job(job_id, JobStatus.DETECTING_SCENES, "Detecting scenes...", 30.0)
+            scenes = detect_scenes(movie_path, scenes_dir)
+            stats.total_scenes = len(scenes)
+            _checkpoint(job_id, "scenes_detected")
+        else:
+            logger.info("Checkpoint: scenes already detected, skipping")
+            scenes = load_scenes(scenes_dir)
 
-        _update_job(job_id, JobStatus.DETECTING_SCENES, "Detecting scenes...", 30.0)
-        scenes = detect_scenes(movie_path, scenes_dir)
-        stats.total_scenes = len(scenes)
+        checkpoint = _did_checkpoint(job_id, "keyframes_extracted")
+        if not checkpoint:
+            _update_job(job_id, JobStatus.EXTRACTING_KEYFRAMES, "Extracting keyframes...", 35.0)
+            scenes = extract_keyframes(movie_path, scenes, kf_dir)
+            _checkpoint(job_id, "keyframes_extracted")
+        else:
+            logger.info("Checkpoint: keyframes already extracted, skipping")
+            scenes = [s for s in scenes if s.keyframe_path and Path(s.keyframe_path).exists()]
 
-        _update_job(job_id, JobStatus.EXTRACTING_KEYFRAMES, "Extracting keyframes...", 35.0)
-        scenes = extract_keyframes(movie_path, scenes, kf_dir)
+        checkpoint = _did_checkpoint(job_id, "matched")
+        if not checkpoint:
+            _update_job(job_id, JobStatus.MATCHING, "Matching voiceover to scenes...", 50.0)
+            match_results = match_voice_to_scenes(voice_transcript.segments, scenes)
+            stats.matched_segments = sum(1 for m in match_results if m.timeline is not None)
+            stats.skipped_segments = stats.total_voice_segments - stats.matched_segments
+            stats.total_clip_candidates = sum(len(m.candidates) for m in match_results)
+            _checkpoint(job_id, "matched")
+        else:
+            logger.info("Checkpoint: matching already complete, skipping")
+            # Load match results from checkpoint (re-build timeline from saved)
+            match_results = []
+            logger.info("Checkpoint: matching already complete, skipping")
+            match_results = []
 
-        _update_job(job_id, JobStatus.MATCHING, "Matching voiceover to scenes...", 50.0)
-        match_results = match_voice_to_scenes(voice_transcript.segments, scenes)
-        stats.matched_segments = sum(1 for m in match_results if m.timeline is not None)
-        stats.skipped_segments = stats.total_voice_segments - stats.matched_segments
-        stats.total_clip_candidates = sum(len(m.candidates) for m in match_results)
-        stats.nvidia_api_calls = sum(1 for m in match_results if m.candidates)
+        checkpoint = _did_checkpoint(job_id, "rendered")
+        if not checkpoint:
+            _update_job(job_id, JobStatus.RENDERING, "Building timeline and rendering...", 70.0)
+            timeline = build_timeline(match_results)
+            if not timeline:
+                raise RuntimeError("No segments matched, cannot render")
 
-        _update_job(job_id, JobStatus.RENDERING, "Building timeline and rendering...", 70.0)
-        timeline = build_timeline(match_results)
-        if not timeline:
-            raise RuntimeError("No segments matched, cannot render")
-
-        output_path = render_video(movie_path, voice_wav, timeline, output_dir / "recap")
-        stats.rendering_duration_sec = round(sum(t.target_duration for t in timeline), 2)
-        stats.total_processing_time_sec = round(time.time() - start_time, 2)
+            output_path = render_video(movie_path, voice_wav, timeline, output_dir / "recap")
+            stats.rendering_duration_sec = round(sum(t.target_duration for t in timeline), 2)
+            stats.total_processing_time_sec = round(time.time() - start_time, 2)
+            _checkpoint(job_id, "rendered")
+        else:
+            logger.info("Checkpoint: rendering already complete, skipping")
 
         job["output_url"] = f"/output/{job_id}/recap.mp4"
         job["output_filename"] = "recap.mp4"
@@ -197,6 +243,19 @@ def _run_pipeline(job_id: str, movie_url: str, voiceover_url: str, use_local_pat
         logger.exception("Pipeline failed for job %s", job_id)
         _update_job(job_id, JobStatus.FAILED, f"Pipeline error: {e}", 0.0)
         job["error"] = str(e)
+
+
+def _checkpoint(job_id: str, stage_name: str):
+    job = _jobs.get(job_id)
+    if not job:
+        return
+    job["checkpoint"] = stage_name
+    _persist_job(job_id)
+
+
+def _did_checkpoint(job_id: str, stage_name: str) -> bool:
+    job = _jobs.get(job_id)
+    return job is not None and job.get("checkpoint") == stage_name
 
 
 def _update_job(job_id: str, status: JobStatus, stage: str, progress: float):

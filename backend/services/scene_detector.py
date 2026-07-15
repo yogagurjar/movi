@@ -49,17 +49,36 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
     duration = _get_video_duration(video_path)
     logger.info("Video: %.1f sec @ %.2f fps", duration, fps)
 
-    logger.info("Detecting scenes with FFmpeg (GPU hwaccel)...")
-    cmd = [
-        "ffmpeg", "-hwaccel", "cuda",
-        "-i", str(video_path),
-        "-vf", "select='gt(scene,0.3)',showinfo",
-        "-vsync", "vfr",
-        "-f", "null", "-",
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.warning("FFmpeg scene detection failed, falling back to ContentDetector")
+    def _run_ffmpeg_scenedetect(hwaccel: str = "") -> list[SceneInfo]:
+        cmd = ["ffmpeg"]
+        if hwaccel:
+            cmd += ["-hwaccel", hwaccel]
+        cmd += ["-i", str(video_path), "-vf", "select='gt(scene,0.3)',showinfo", "-vsync", "vfr", "-f", "null", "-"]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            return []
+        scene_times = [0.0]
+        for line in result.stderr.split("\n"):
+            m = re.search(r"pts_time:(\d+\.\d+)", line)
+            if m:
+                t = float(m.group(1))
+                if 0.0 < t < duration:
+                    scene_times.append(t)
+        scene_times.append(duration)
+        scenes = []
+        for i in range(len(scene_times) - 1):
+            s, e = scene_times[i], scene_times[i + 1]
+            if e - s >= 0.5:
+                scenes.append(SceneInfo(scene_index=len(scenes), start_time=round(s, 3), end_time=round(e, 3), duration=round(e - s, 3), keyframe_path=None))
+        return scenes
+
+    logger.info("Detecting scenes (tier 1: FFmpeg GPU)...")
+    scenes = _run_ffmpeg_scenedetect(hwaccel="cuda")
+    if len(scenes) <= 1:
+        logger.warning("GPU detection gave %d scenes, retrying FFmpeg CPU...", len(scenes))
+        scenes = _run_ffmpeg_scenedetect(hwaccel="")
+    if len(scenes) <= 1:
+        logger.warning("FFmpeg gave %d scenes, falling back to ContentDetector...", len(scenes))
         try:
             from scenedetect import detect, ContentDetector
             scene_list = detect(str(video_path), ContentDetector(threshold=settings.SCENE_DETECTION_THRESHOLD))
@@ -71,26 +90,9 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
         for idx, scene in enumerate(scene_list):
             start, end = _scene_to_seconds(scene)
             scenes.append(SceneInfo(scene_index=idx, start_time=round(start, 3), end_time=round(end, 3), duration=round(end - start, 3), keyframe_path=None))
-        logger.info("Detected %d scenes via ContentDetector fallback", len(scenes))
-        return scenes
 
-    scene_times: list[float] = [0.0]
-    for line in result.stderr.split("\n"):
-        if "pts_time:" in line:
-            match = re.search(r"pts_time:(\d+\.\d+)", line)
-            if match:
-                t = float(match.group(1))
-                if t > 0.0 and t < duration:
-                    scene_times.append(t)
-    scene_times.append(duration)
-
-    scenes: list[SceneInfo] = []
-    for i in range(len(scene_times) - 1):
-        start, end = scene_times[i], scene_times[i + 1]
-        if end - start >= 0.5:
-            scenes.append(SceneInfo(scene_index=len(scenes), start_time=round(start, 3), end_time=round(end, 3), duration=round(end - start, 3), keyframe_path=None))
-
-    logger.info("Detected %d scenes via FFmpeg GPU", len(scenes))
+    logger.info("Detected %d scenes", len(scenes))
+    save_scenes(scenes, scenes_dir)
     return scenes
 
 
@@ -132,4 +134,20 @@ def extract_keyframes(video_path: Path, scenes: list[SceneInfo], keyframes_dir: 
 
     extracted = sum(1 for s in scenes if s.keyframe_path is not None)
     logger.info("Extracted %d / %d keyframes", extracted, len(scenes))
+    save_scenes(scenes, keyframes_dir.parent)
     return scenes
+
+
+def save_scenes(scenes: list[SceneInfo], scenes_dir: Path):
+    import json
+    data = [s.model_dump() for s in scenes]
+    (scenes_dir / "scenes.json").write_text(json.dumps(data, indent=2, default=str))
+
+
+def load_scenes(scenes_dir: Path) -> list[SceneInfo]:
+    import json
+    path = scenes_dir / "scenes.json"
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text())
+    return [SceneInfo(**s) for s in data]

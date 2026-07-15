@@ -87,9 +87,13 @@ def _load_qwen():
     try:
         from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
     except ImportError:
-        import subprocess, sys
-        logger.info("Installing transformers>=4.47.0 and qwen-vl-utils...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "transformers>=4.47.0", "qwen-vl-utils", "-q"])
+        import subprocess, sys, importlib
+        logger.info("Installing/upgrading transformers>=4.47.0 and qwen-vl-utils...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", "transformers>=4.47.0", "qwen-vl-utils", "-q"])
+        for mod in list(sys.modules.keys()):
+            if 'transformers' in mod:
+                del sys.modules[mod]
+        importlib.invalidate_caches()
         from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
