@@ -144,8 +144,11 @@ def _nvidia_verify(
             confidence = float(parsed.get("confidence", 0.0))
             reasoning = str(parsed.get("reasoning", ""))
             results.append((scene_idx, min(max(confidence, 0.0), 1.0), reasoning))
+        except httpx.HTTPStatusError as e:
+            logger.error("NVIDIA API HTTP error %d for scene %d: %s", e.response.status_code, scene_idx, e.response.text[:500])
+            results.append((scene_idx, 0.0, f"http_{e.response.status_code}"))
         except Exception as e:
-            logger.warning("NVIDIA API error for scene %d: %s", scene_idx, e)
+            logger.error("NVIDIA API error for scene %d: %s", scene_idx, e)
             results.append((scene_idx, 0.0, f"api_error: {e}"))
 
     return results
@@ -301,8 +304,18 @@ def match_voice_to_scenes(
         )
 
     matched = sum(1 for m in match_results if m.timeline is not None)
+    total_api_calls = sum(1 for m in match_results if m.candidates)
     logger.info(
-        "Matching complete: %d / %d segments matched",
-        matched, len(voice_segments),
+        "Matching complete: %d / %d matched, %d NVIDIA calls, CLIP sim range: %.3f-%.3f",
+        matched, len(voice_segments), total_api_calls,
+        min((m.candidates[0].similarity for m in match_results if m.candidates), default=0.0),
+        max((m.candidates[0].similarity for m in match_results if m.candidates), default=0.0),
     )
+    for m in match_results[:5]:
+        if m.candidates:
+            logger.info(
+                "  Voice[%d] '%s...' → top CLIP=%.3f, matched=%s",
+                m.voice_segment_index, m.voice_text[:40], m.candidates[0].similarity,
+                m.timeline is not None,
+            )
     return match_results
