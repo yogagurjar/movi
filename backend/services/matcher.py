@@ -220,10 +220,14 @@ def match_voice_to_scenes(
         best_confidence: float = 0.0
         best_reasoning: str | None = None
         best_clip_sim: float = 0.0
+        nvidia_all_failed = all(nvidia_map.get(c.scene_index, (0.0, ""))[0] == 0.0 for c in candidates)
 
         for c in candidates:
             nv_conf, nv_reason = nvidia_map.get(c.scene_index, (0.0, ""))
-            final_conf = (c.similarity * 0.3) + (nv_conf * 0.7)
+            if nvidia_all_failed:
+                final_conf = c.similarity
+            else:
+                final_conf = (c.similarity * 0.3) + (nv_conf * 0.7)
 
             if c.scene_index in used_scenes and final_conf < settings.SCENE_REUSE_CONFIDENCE:
                 continue
@@ -238,7 +242,10 @@ def match_voice_to_scenes(
         if best_candidate is None:
             for c in candidates:
                 nv_conf, nv_reason = nvidia_map.get(c.scene_index, (0.0, ""))
-                final_conf = (c.similarity * 0.3) + (nv_conf * 0.7)
+                if nvidia_all_failed:
+                    final_conf = c.similarity
+                else:
+                    final_conf = (c.similarity * 0.3) + (nv_conf * 0.7)
 
                 if c.scene_index in used_scenes:
                     continue
@@ -249,6 +256,12 @@ def match_voice_to_scenes(
                         best_confidence = final_conf
                         best_reasoning = nv_reason
                         best_clip_sim = c.similarity
+
+        logger.debug(
+            "Voice seg %d: %d candidates, nvidia_ok=%s, matched=%s, best_conf=%.3f, text='%s'",
+            seg.segment_index, len(candidates), not nvidia_all_failed,
+            best_candidate is not None, best_confidence, seg.text[:50],
+        )
 
         accepted = best_candidate is not None
         if accepted:
