@@ -183,28 +183,18 @@ def match_voice_to_scenes(
         sims = sim_matrix[vi]
         top5_idx = np.argsort(sims)[::-1][:settings.TOP_K_CANDIDATES]
 
-        candidates = [
-            ClipMatchCandidate(
-                scene_index=scene_indices[i],
-                similarity=round(float(sims[i]), 4),
-            )
+        raw_candidates = [
+            (scene_indices[i], float(sims[i]))
             for i in top5_idx
-            if float(sims[i]) >= settings.CONFIDENCE_MIN
         ]
-
-        if not candidates:
-            match_results.append(
-                MatchResult(
-                    voice_segment_index=seg.segment_index,
-                    voice_text=seg.text,
-                    voice_start=seg.start,
-                    voice_end=seg.end,
-                    candidates=[],
-                    verification=None,
-                    timeline=None,
-                )
-            )
-            continue
+        candidates = [
+            ClipMatchCandidate(scene_index=idx, similarity=round(sim, 4))
+            for idx, sim in raw_candidates
+            if sim >= settings.CONFIDENCE_MIN * 0.5
+        ]
+        if not candidates and raw_candidates:
+            best = max(raw_candidates, key=lambda x: x[1])
+            candidates = [ClipMatchCandidate(scene_index=best[0], similarity=round(best[1], 4))]
 
         nvidia_input = [
             (c.scene_index, kf_paths[scene_indices.index(c.scene_index)])
@@ -256,6 +246,12 @@ def match_voice_to_scenes(
                         best_confidence = final_conf
                         best_reasoning = nv_reason
                         best_clip_sim = c.similarity
+
+        if best_candidate is None and candidates:
+            best_candidate = candidates[0].scene_index
+            best_confidence = candidates[0].similarity
+            best_clip_sim = candidates[0].similarity
+            best_reasoning = "fallback_top1"
 
         logger.debug(
             "Voice seg %d: %d candidates, nvidia_ok=%s, matched=%s, best_conf=%.3f, text='%s'",

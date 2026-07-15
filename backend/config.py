@@ -32,8 +32,8 @@ class Settings(BaseSettings):
     CLIP_BATCH_SIZE: int = 64
 
     CONFIDENCE_ACCEPT: float = 0.85
-    CONFIDENCE_FALLBACK: float = 0.70
-    CONFIDENCE_MIN: float = 0.70
+    CONFIDENCE_FALLBACK: float = 0.50
+    CONFIDENCE_MIN: float = 0.30
     TOP_K_CANDIDATES: int = 5
     SCENE_REUSE_CONFIDENCE: float = 0.90
 
