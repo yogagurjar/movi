@@ -3,8 +3,6 @@ import re
 import subprocess
 from pathlib import Path
 
-import cv2
-
 from backend.config import settings
 from backend.models import SceneInfo
 
@@ -98,34 +96,39 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
 
 def extract_keyframes(video_path: Path, scenes: list[SceneInfo], keyframes_dir: Path) -> list[SceneInfo]:
     keyframes_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Extracting %d keyframes...", len(scenes))
-
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open video: {video_path}")
-
-    original_fps = cap.get(cv2.CAP_PROP_FPS)
-    if original_fps <= 0:
-        original_fps = 30.0
+    logger.info("Extracting %d keyframes via FFmpeg GPU...", len(scenes))
 
     for scene in scenes:
         mid_time = (scene.start_time + scene.end_time) / 2.0
-        frame_idx = int(mid_time * original_fps)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        kf_path = keyframes_dir / f"scene_{scene.scene_index:05d}.jpg"
 
-        ret, frame = cap.read()
-        if not ret:
-            mid_time = scene.start_time + 0.1
-            frame_idx = int(mid_time * original_fps)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ret, frame = cap.read()
+        cmd = [
+            "ffmpeg", "-hwaccel", "cuda",
+            "-ss", str(mid_time),
+            "-i", str(video_path),
+            "-vframes", "1",
+            "-q:v", "2",
+            "-y",
+            str(kf_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
 
-        if ret:
-            kf_path = keyframes_dir / f"scene_{scene.scene_index:05d}.jpg"
-            cv2.imwrite(str(kf_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if kf_path.exists() and kf_path.stat().st_size > 0:
             scene.keyframe_path = str(kf_path)
-
-    cap.release()
+        else:
+            retry_time = scene.start_time + 0.1
+            retry_cmd = [
+                "ffmpeg", "-hwaccel", "cuda",
+                "-ss", str(retry_time),
+                "-i", str(video_path),
+                "-vframes", "1",
+                "-q:v", "2",
+                "-y",
+                str(kf_path),
+            ]
+            subprocess.run(retry_cmd, capture_output=True, text=True)
+            if kf_path.exists() and kf_path.stat().st_size > 0:
+                scene.keyframe_path = str(kf_path)
 
     extracted = sum(1 for s in scenes if s.keyframe_path is not None)
     logger.info("Extracted %d / %d keyframes", extracted, len(scenes))
