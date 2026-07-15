@@ -1,4 +1,5 @@
 import logging
+import re
 import subprocess
 from pathlib import Path
 
@@ -50,34 +51,48 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
     duration = _get_video_duration(video_path)
     logger.info("Video: %.1f sec @ %.2f fps", duration, fps)
 
-    logger.info("Detecting scenes with PySceneDetect ContentDetector...")
-    try:
-        from scenedetect import detect, ContentDetector
-        scene_list = detect(
-            str(video_path),
-            ContentDetector(threshold=settings.SCENE_DETECTION_THRESHOLD),
-        )
-    except Exception as e:
-        logger.warning("ContentDetector failed (%s), using fallback", e)
-        scene_list = []
+    logger.info("Detecting scenes with FFmpeg (GPU hwaccel)...")
+    cmd = [
+        "ffmpeg", "-hwaccel", "cuda",
+        "-i", str(video_path),
+        "-vf", "select='gt(scene,0.3)',showinfo",
+        "-vsync", "vfr",
+        "-f", "null", "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.warning("FFmpeg scene detection failed, falling back to ContentDetector")
+        try:
+            from scenedetect import detect, ContentDetector
+            scene_list = detect(str(video_path), ContentDetector(threshold=settings.SCENE_DETECTION_THRESHOLD))
+        except Exception:
+            scene_list = []
+        if not scene_list:
+            scene_list = [([0.0], [duration])]
+        scenes = []
+        for idx, scene in enumerate(scene_list):
+            start, end = _scene_to_seconds(scene)
+            scenes.append(SceneInfo(scene_index=idx, start_time=round(start, 3), end_time=round(end, 3), duration=round(end - start, 3), keyframe_path=None))
+        logger.info("Detected %d scenes via ContentDetector fallback", len(scenes))
+        return scenes
 
-    if not scene_list:
-        scene_list = [([0.0], [duration])]
+    scene_times: list[float] = [0.0]
+    for line in result.stderr.split("\n"):
+        if "pts_time:" in line:
+            match = re.search(r"pts_time:(\d+\.\d+)", line)
+            if match:
+                t = float(match.group(1))
+                if t > 0.0 and t < duration:
+                    scene_times.append(t)
+    scene_times.append(duration)
 
     scenes: list[SceneInfo] = []
-    for idx, scene in enumerate(scene_list):
-        start, end = _scene_to_seconds(scene)
-        scenes.append(
-            SceneInfo(
-                scene_index=idx,
-                start_time=round(start, 3),
-                end_time=round(end, 3),
-                duration=round(end - start, 3),
-                keyframe_path=None,
-            )
-        )
+    for i in range(len(scene_times) - 1):
+        start, end = scene_times[i], scene_times[i + 1]
+        if end - start >= 0.5:
+            scenes.append(SceneInfo(scene_index=len(scenes), start_time=round(start, 3), end_time=round(end, 3), duration=round(end - start, 3), keyframe_path=None))
 
-    logger.info("Detected %d scenes", len(scenes))
+    logger.info("Detected %d scenes via FFmpeg GPU", len(scenes))
     return scenes
 
 

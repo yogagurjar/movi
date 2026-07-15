@@ -84,7 +84,13 @@ def _load_qwen():
         return
     _device = torch.device(settings.TORCH_DEVICE)
     logger.info("Loading Qwen2.5-VL-3B-Instruct with 4-bit quantization on %s...", _device)
-    from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
+    try:
+        from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
+    except ImportError:
+        import subprocess, sys
+        logger.info("Installing transformers>=4.47.0 and qwen-vl-utils...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "transformers>=4.47.0", "qwen-vl-utils", "-q"])
+        from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.float16,
