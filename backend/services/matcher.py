@@ -176,6 +176,12 @@ def match_voice_to_scenes(
 
     sim_matrix = cosine_similarity(text_embs, image_embs)
 
+    all_sims = sim_matrix.flatten()
+    logger.info(
+        "CLIP sim matrix: shape=%s, range=[%.4f, %.4f], mean=%.4f, median=%.4f",
+        sim_matrix.shape, all_sims.min(), all_sims.max(), all_sims.mean(), np.median(all_sims),
+    )
+
     used_scenes: set[int] = set()
     match_results: list[MatchResult] = []
 
@@ -253,7 +259,14 @@ def match_voice_to_scenes(
             best_clip_sim = candidates[0].similarity
             best_reasoning = "fallback_top1"
 
-        logger.debug(
+        if vi < 5 or (vi % 50 == 0):
+            logger.info(
+                "Match[%d]: top_sim=%.4f, candidates=%d, nvidia_ok=%s, accepted=%s, conf=%.4f, text='%s'",
+                vi, candidates[0].similarity if candidates else 0,
+                len(candidates), not nvidia_all_failed,
+                best_candidate is not None, best_confidence,
+                seg.text[:60],
+            )
             "Voice seg %d: %d candidates, nvidia_ok=%s, matched=%s, best_conf=%.3f, text='%s'",
             seg.segment_index, len(candidates), not nvidia_all_failed,
             best_candidate is not None, best_confidence, seg.text[:50],
@@ -297,6 +310,15 @@ def match_voice_to_scenes(
         )
 
     matched = sum(1 for m in match_results if m.timeline is not None)
+    not_matched = [m for m in match_results if m.timeline is None]
+    for nm in not_matched[:5]:
+        logger.info(
+            "NON-MATCH: seg[%d] sim=%.4f conf=%.4f accepted=%s text='%s'",
+            nm.voice_segment_index, nm.verification.clip_similarity if nm.verification else 0,
+            nm.verification.final_confidence if nm.verification else 0,
+            nm.verification.accepted if nm.verification else False,
+            nm.voice_text[:60],
+        )
     logger.info(
         "Matching complete: %d / %d segments matched",
         matched, len(voice_segments),
