@@ -49,50 +49,59 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
     duration = _get_video_duration(video_path)
     logger.info("Video: %.1f sec @ %.2f fps", duration, fps)
 
-    def _run_ffmpeg_scenedetect(hwaccel: str = "") -> list[SceneInfo]:
+    def _ffmpeg_scenes(use_gpu: bool) -> list[SceneInfo]:
         cmd = ["ffmpeg"]
-        if hwaccel:
-            cmd += ["-hwaccel", hwaccel, "-hwaccel_output_format", hwaccel]
+        if use_gpu:
+            cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+        cmd += ["-i", str(video_path)]
+        if use_gpu:
             vf = "hwdownload,format=nv12,select='gt(scene,0.3)',showinfo"
         else:
             vf = "select='gt(scene,0.3)',showinfo"
-        cmd += ["-i", str(video_path), "-vf", vf, "-vsync", "vfr", "-f", "null", "-"]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        cmd += ["-vf", vf, "-vsync", "vfr", "-f", "null", "-"]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if result.returncode != 0:
             return []
-        scene_times = [0.0]
+        times = [0.0]
         for line in result.stderr.split("\n"):
             m = re.search(r"pts_time:(\d+\.\d+)", line)
             if m:
                 t = float(m.group(1))
                 if 0.0 < t < duration:
-                    scene_times.append(t)
-        scene_times.append(duration)
-        scenes = []
-        for i in range(len(scene_times) - 1):
-            s, e = scene_times[i], scene_times[i + 1]
+                    times.append(t)
+        times.append(duration)
+        out = []
+        for i in range(len(times) - 1):
+            s, e = times[i], times[i + 1]
             if e - s >= 0.5:
-                scenes.append(SceneInfo(scene_index=len(scenes), start_time=round(s, 3), end_time=round(e, 3), duration=round(e - s, 3), keyframe_path=None))
+                out.append(SceneInfo(scene_index=len(out), start_time=round(s, 3), end_time=round(e, 3), duration=round(e - s, 3), keyframe_path=None))
+        return out
+
+    scenes = _ffmpeg_scenes(use_gpu=True)
+    if len(scenes) > 1:
+        logger.info("Detected %d scenes via FFmpeg GPU", len(scenes))
+        save_scenes(scenes, scenes_dir)
         return scenes
 
-    logger.info("Detecting scenes (tier 1: FFmpeg GPU)...")
-    scenes = _run_ffmpeg_scenedetect(hwaccel="cuda")
-    if len(scenes) <= 1:
-        logger.warning("GPU detection gave %d scenes, retrying FFmpeg CPU...", len(scenes))
-        scenes = _run_ffmpeg_scenedetect(hwaccel="")
-    if len(scenes) <= 1:
-        logger.warning("FFmpeg gave %d scenes, falling back to ContentDetector...", len(scenes))
-        try:
-            from scenedetect import detect, ContentDetector
-            scene_list = detect(str(video_path), ContentDetector(threshold=settings.SCENE_DETECTION_THRESHOLD))
-        except Exception:
-            scene_list = []
-        if not scene_list:
-            scene_list = [([0.0], [duration])]
-        scenes = []
-        for idx, scene in enumerate(scene_list):
-            start, end = _scene_to_seconds(scene)
-            scenes.append(SceneInfo(scene_index=idx, start_time=round(start, 3), end_time=round(end, 3), duration=round(end - start, 3), keyframe_path=None))
+    logger.warning("GPU gave %d scenes, retrying CPU FFmpeg...", len(scenes))
+    scenes = _ffmpeg_scenes(use_gpu=False)
+    if len(scenes) > 1:
+        logger.info("Detected %d scenes via FFmpeg CPU", len(scenes))
+        save_scenes(scenes, scenes_dir)
+        return scenes
+
+    logger.warning("FFmpeg gave %d scenes, falling back to ContentDetector...", len(scenes))
+    try:
+        from scenedetect import detect, ContentDetector
+        scene_list = detect(str(video_path), ContentDetector(threshold=settings.SCENE_DETECTION_THRESHOLD))
+    except Exception:
+        scene_list = []
+    if not scene_list:
+        scene_list = [([0.0], [duration])]
+    scenes = []
+    for idx, scene in enumerate(scene_list):
+        start, end = _scene_to_seconds(scene)
+        scenes.append(SceneInfo(scene_index=idx, start_time=round(start, 3), end_time=round(end, 3), duration=round(end - start, 3), keyframe_path=None))
 
     logger.info("Detected %d scenes", len(scenes))
     save_scenes(scenes, scenes_dir)
