@@ -170,12 +170,13 @@ def _qwen_verify(
                 }
             ]
             text = _qwen_processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            inputs = _qwen_processor(
-                text=[text],
-                images=[img],
-                padding=True,
-                return_tensors="pt",
-            ).to(_device)
+            vis = _qwen_processor.image_processor(images=[img], return_tensors="pt")
+            tok = _qwen_processor.tokenizer(text=[text], padding=True, return_tensors="pt")
+            inputs = {
+                "pixel_values": vis["pixel_values"].to(_device),
+                "input_ids": tok["input_ids"].to(_device),
+                "attention_mask": tok["attention_mask"].to(_device),
+            }
             with torch.no_grad():
                 generated_ids = _qwen_model.generate(
                     **inputs,
