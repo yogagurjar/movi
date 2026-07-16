@@ -15,18 +15,31 @@ _model: WhisperModel | None = None
 def _get_model() -> WhisperModel:
     global _model
     if _model is None:
-        logger.info(
-            "Loading Whisper model %s on %s (%s)",
-            settings.WHISPER_MODEL_SIZE,
-            settings.WHISPER_DEVICE,
-            settings.WHISPER_COMPUTE_TYPE,
-        )
-        _model = WhisperModel(
-            settings.WHISPER_MODEL_SIZE,
-            device=settings.WHISPER_DEVICE,
-            compute_type=settings.WHISPER_COMPUTE_TYPE,
-            num_workers=settings.MAX_WORKERS,
-        )
+        import time
+        last_err = None
+        for attempt in range(5):
+            try:
+                logger.info(
+                    "Loading Whisper model %s on %s (%s) attempt %d/5",
+                    settings.WHISPER_MODEL_SIZE,
+                    settings.WHISPER_DEVICE,
+                    settings.WHISPER_COMPUTE_TYPE,
+                    attempt + 1,
+                )
+                _model = WhisperModel(
+                    settings.WHISPER_MODEL_SIZE,
+                    device=settings.WHISPER_DEVICE,
+                    compute_type=settings.WHISPER_COMPUTE_TYPE,
+                    num_workers=settings.MAX_WORKERS,
+                    download_root=None,
+                )
+                return _model
+            except Exception as e:
+                last_err = e
+                wait = 2 ** attempt
+                logger.warning("Model download failed (attempt %d/5): %s. Retrying in %ds...", attempt + 1, e, wait)
+                time.sleep(wait)
+        raise RuntimeError(f"Failed to load Whisper model after 5 attempts: {last_err}")
     return _model
 
 
