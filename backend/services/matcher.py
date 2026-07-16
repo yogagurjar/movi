@@ -97,13 +97,13 @@ def _load_qwen():
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir",
              "--target", target_dir,
-             "numpy==1.26.4", "transformers==4.49.2", "accelerate==1.3.0",
+             "numpy==1.26.4", "transformers>=4.49.0,<4.50", "accelerate==1.3.0",
              "qwen-vl-utils", "bitsandbytes"],
             capture_output=True, text=True, timeout=300,
         )
         if result.returncode != 0:
             logger.error("Auto-install failed:\n%s", result.stderr[:500])
-            raise RuntimeError("Qwen dependencies required; run notebook cell: pip install numpy==1.26.4 transformers==4.49.2 accelerate==1.3.0 bitsandbytes qwen-vl-utils")
+            raise RuntimeError("Qwen dependencies required; run notebook cell: pip install numpy==1.26.4 'transformers>=4.49.0,<4.50' accelerate==1.3.0 bitsandbytes qwen-vl-utils")
         logger.info("Installed, adding %s to sys.path...", target_dir)
         sys.path.insert(0, target_dir)
         for mod in list(sys.modules):
