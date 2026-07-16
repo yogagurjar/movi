@@ -154,7 +154,7 @@ def _decord_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: floa
         return scenes
 
     except Exception as e:
-        logger.warning("decord GPU failed: %s", e)
+        logger.info("decord GPU not available (CUDA not compiled), using FFmpeg pipe fallback...")
         return None
 
 
