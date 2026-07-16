@@ -336,28 +336,57 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
 def extract_keyframes(video_path: Path, scenes: list[SceneInfo], keyframes_dir: Path) -> list[SceneInfo]:
     keyframes_dir.mkdir(parents=True, exist_ok=True)
     total = len(scenes)
-    logger.info("Extracting %d keyframes via FFmpeg%s...", total, " GPU" if settings.GPU_ENABLED else "")
-    log_interval = max(1, total // 10)
+    logger.info("Extracting %d keyframes via FFmpeg single-pass%s...", total, " GPU" if settings.GPU_ENABLED and _ffmpeg_has_cuda() else "")
 
-    for idx, scene in enumerate(scenes):
-        if idx > 0 and idx % log_interval == 0:
-            logger.info("Keyframe extraction: %d%% (%d/%d)", int(idx * 100 / total), idx, total)
-        mid_time = (scene.start_time + scene.end_time) / 2.0
-        kf_path = keyframes_dir / f"scene_{scene.scene_index:05d}.jpg"
+    fps = _get_video_fps(video_path)
+    select_parts = []
+    for scene in scenes:
+        mid = (scene.start_time + scene.end_time) / 2.0
+        frame_num = max(0, int(mid * fps))
+        select_parts.append(f"eq(n,{frame_num})")
+    select_expr = "+".join(select_parts)
 
-        cmd = ["ffmpeg"] + _hwaccel_flags()
-        cmd += ["-ss", str(mid_time), "-i", str(video_path), "-vframes", "1", "-q:v", "2", "-y", str(kf_path)]
-        subprocess.run(cmd, capture_output=True, text=True)
+    # Single FFmpeg pass: sequential decode, pick specified frames, output as numbered JPEGs
+    cmd = ["ffmpeg"] + _hwaccel_flags() + [
+        "-i", str(video_path),
+        "-vf", f"select='{select_expr}',setpts=N/FRAME_RATE/TB",
+        "-vsync", "0",
+        "-q:v", "2",
+        "-y",
+        str(keyframes_dir / "kf_%05d.jpg"),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
 
-        if kf_path.exists() and kf_path.stat().st_size > 0:
-            scene.keyframe_path = str(kf_path)
-        else:
-            retry_time = scene.start_time + 0.1
-            retry_cmd = ["ffmpeg"] + _hwaccel_flags()
-            retry_cmd += ["-ss", str(retry_time), "-i", str(video_path), "-vframes", "1", "-q:v", "2", "-y", str(kf_path)]
-            subprocess.run(retry_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.warning("Single-pass keyframe extraction failed (%s), falling back to per-scene...", result.stderr[:200])
+        for idx, scene in enumerate(scenes):
+            if idx > 0 and idx % max(1, total // 10) == 0:
+                logger.info("Keyframe extraction: %d%% (%d/%d)", int(idx * 100 / total), idx, total)
+            mid_time = (scene.start_time + scene.end_time) / 2.0
+            kf_path = keyframes_dir / f"scene_{scene.scene_index:05d}.jpg"
+            cmd = ["ffmpeg"] + _hwaccel_flags() + ["-ss", str(mid_time), "-i", str(video_path), "-vframes", "1", "-q:v", "2", "-y", str(kf_path)]
+            subprocess.run(cmd, capture_output=True, text=True)
             if kf_path.exists() and kf_path.stat().st_size > 0:
                 scene.keyframe_path = str(kf_path)
+            else:
+                retry_cmd = ["ffmpeg"] + _hwaccel_flags() + ["-ss", str(scene.start_time + 0.1), "-i", str(video_path), "-vframes", "1", "-q:v", "2", "-y", str(kf_path)]
+                subprocess.run(retry_cmd, capture_output=True, text=True)
+                if kf_path.exists() and kf_path.stat().st_size > 0:
+                    scene.keyframe_path = str(kf_path)
+    else:
+        logger.info("Single-pass extraction complete, mapping %d keyframes...", total)
+        for i, scene in enumerate(scenes):
+            kf_path = keyframes_dir / f"kf_{i:05d}.jpg"
+            if kf_path.exists() and kf_path.stat().st_size > 0:
+                scene.keyframe_path = str(kf_path)
+            else:
+                # Single frame fallback for missed keyframes
+                mid_time = (scene.start_time + scene.end_time) / 2.0
+                fallback_path = keyframes_dir / f"scene_{scene.scene_index:05d}.jpg"
+                fallback_cmd = ["ffmpeg"] + _hwaccel_flags() + ["-ss", str(mid_time), "-i", str(video_path), "-vframes", "1", "-q:v", "2", "-y", str(fallback_path)]
+                subprocess.run(fallback_cmd, capture_output=True, text=True)
+                if fallback_path.exists() and fallback_path.stat().st_size > 0:
+                    scene.keyframe_path = str(fallback_path)
 
     extracted = sum(1 for s in scenes if s.keyframe_path is not None)
     logger.info("Extracted %d / %d keyframes", extracted, len(scenes))
