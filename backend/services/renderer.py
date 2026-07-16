@@ -42,7 +42,7 @@ def _video_codec() -> str:
 
 
 def _pixel_fmt() -> str:
-    return "p010le" if _video_codec() == "h264_nvenc" else "yuv420p"
+    return "yuv420p"
 
 
 def _fwaccel_flags() -> list[str]:

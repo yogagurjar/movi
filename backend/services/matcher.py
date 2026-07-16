@@ -170,7 +170,7 @@ def _qwen_verify(
                 }
             ]
             text = _qwen_processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            vis = _qwen_processor.image_processor(images=[img], return_tensors="pt")
+            vis = _qwen_processor.image_processor(images=[img], return_tensors="pt", do_pad=True)
             tok = _qwen_processor.tokenizer(text=[text], padding=True, return_tensors="pt")
             inputs = {"pixel_values": vis["pixel_values"].to(_device)}
             if "image_grid_thw" in vis:
