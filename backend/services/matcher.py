@@ -84,14 +84,22 @@ def _load_qwen():
         return
     _device = torch.device(settings.TORCH_DEVICE)
     logger.info("Loading Qwen2.5-VL-3B-Instruct with 4-bit quantization on %s...", _device)
+    import importlib
     try:
+        import transformers as _tf
+        if tuple(int(x) for x in _tf.__version__.split(".")[:2]) < (4, 47):
+            raise ImportError(f"transformers {_tf.__version__} too old, need >=4.47.0")
         from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
-    except ImportError:
-        import subprocess, sys, importlib
+    except (ImportError, AttributeError):
+        import subprocess, sys
         logger.info("Installing/upgrading transformers>=4.47.0 and qwen-vl-utils...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", "transformers>=4.47.0", "qwen-vl-utils", "-q"])
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir",
+             "transformers>=4.47.0", "qwen-vl-utils", "-q"],
+            timeout=180,
+        )
         for mod in list(sys.modules.keys()):
-            if 'transformers' in mod:
+            if 'transformers' in mod or 'qwen' in mod:
                 del sys.modules[mod]
         importlib.invalidate_caches()
         from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
