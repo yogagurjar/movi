@@ -1,6 +1,5 @@
 import json
 import logging
-import pickle
 from pathlib import Path
 
 import numpy as np
@@ -8,45 +7,11 @@ import torch
 
 from backend.config import settings
 from backend.models import SceneIndex
+from backend.services.qwen_utils import get_device, load_qwen, resize_for_qwen, get_model
 
 logger = logging.getLogger(__name__)
 
-_qwen_model = None
-_qwen_processor = None
 _embed_model = None
-_device = None
-
-
-def _load_qwen():
-    global _qwen_model, _qwen_processor, _device
-    if _qwen_model is not None:
-        return
-    _device = torch.device(settings.TORCH_DEVICE)
-    from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
-    logger.info("Loading Qwen2.5-VL-7B-Instruct with 4-bit quantization on %s...", _device)
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-    )
-    _qwen_model = AutoModelForVision2Seq.from_pretrained(
-        settings.QWEN_MODEL_NAME,
-        quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=torch.float16,
-    )
-    _qwen_processor = AutoProcessor.from_pretrained(settings.QWEN_MODEL_NAME)
-
-
-def _resize_for_qwen(image_path: str, max_size: int = 1024):
-    import PIL.Image
-    img = PIL.Image.open(image_path).convert("RGB")
-    w, h = img.size
-    if w > max_size or h > max_size:
-        ratio = min(max_size / w, max_size / h)
-        img = img.resize((int(w * ratio), int(h * ratio)), PIL.Image.LANCZOS)
-    return img
 
 
 def _load_embed_model():
@@ -59,12 +24,12 @@ def _load_embed_model():
 
 
 def _qwen_scene_summary(keyframe_paths: list[str]) -> SceneIndex | None:
-    _load_qwen()
+    qwen_model, qwen_processor, device = get_model()
     images = []
     for kfp in keyframe_paths:
         p = Path(kfp)
         if p.exists():
-            images.append(_resize_for_qwen(kfp))
+            images.append(resize_for_qwen(kfp))
 
     if not images:
         return None
@@ -88,22 +53,22 @@ def _qwen_scene_summary(keyframe_paths: list[str]) -> SceneIndex | None:
             "content": [{"type": "image", "image": img} for img in images] + [{"type": "text", "text": prompt}],
         }
     ]
-    text = _qwen_processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    vis = _qwen_processor.image_processor(images=images, return_tensors="pt")
-    tok = _qwen_processor.tokenizer(text=[text], padding=True, return_tensors="pt")
-    inputs = {"pixel_values": vis["pixel_values"].to(_device)}
+    text = qwen_processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    vis = qwen_processor.image_processor(images=images, return_tensors="pt")
+    tok = qwen_processor.tokenizer(text=[text], padding=True, return_tensors="pt")
+    inputs = {"pixel_values": vis["pixel_values"].to(device)}
     if "image_grid_thw" in vis:
-        inputs["image_grid_thw"] = vis["image_grid_thw"].to(_device)
-    inputs["input_ids"] = tok["input_ids"].to(_device)
-    inputs["attention_mask"] = tok["attention_mask"].to(_device)
+        inputs["image_grid_thw"] = vis["image_grid_thw"].to(device)
+    inputs["input_ids"] = tok["input_ids"].to(device)
+    inputs["attention_mask"] = tok["attention_mask"].to(device)
 
     with torch.no_grad():
-        generated_ids = _qwen_model.generate(**inputs, max_new_tokens=256, temperature=0.1, do_sample=False)
+        generated_ids = qwen_model.generate(**inputs, max_new_tokens=256, temperature=0.1, do_sample=False)
 
     generated_ids_trimmed = [
         out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
     ]
-    output_text = _qwen_processor.batch_decode(
+    output_text = qwen_processor.batch_decode(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
 
