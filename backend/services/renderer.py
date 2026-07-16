@@ -187,6 +187,7 @@ def _render_segment(movie_path: Path, seg: TimelineSegment, output_path: Path):
         cmd.extend(["-preset", "p2", "-tune", "hq", "-rc", "vbr", "-cq", str(settings.OUTPUT_CRF), "-b:v", "20M"])
     cmd.append(str(output_path))
 
+    logger.debug("ffmpeg cmd: %s", " ".join(str(c) for c in cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"Segment render failed for scene {seg.scene_index}:\n{result.stderr[:2000]}")
+        raise RuntimeError(f"Segment render failed for scene {seg.scene_index}:\n{' '.join(cmd)}\n{result.stderr[:3000]}")
