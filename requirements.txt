@@ -29,6 +29,9 @@ aiofiles==24.1.0
 httpx==0.28.1
 aiohttp==3.11.11
 
+# GPU video decoding
+decord>=0.6.0
+
 # Utilities
 numpy==1.26.4
 scikit-learn==1.6.1
