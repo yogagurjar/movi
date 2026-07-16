@@ -93,11 +93,12 @@ def _load_qwen():
         from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
     except (ImportError, AttributeError):
         target_dir = str(Path(__file__).resolve().parent.parent / ".transformers_deps")
-        logger.info("Installing transformers>=4.47.0 to %s for Qwen...", target_dir)
+        logger.info("Installing transformers>=4.47.0 + accelerate to %s for Qwen...", target_dir)
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir",
-             "--target", target_dir, "transformers>=4.47.0", "qwen-vl-utils"],
-            capture_output=True, text=True, timeout=180,
+             "--target", target_dir,
+             "transformers>=4.47.0", "qwen-vl-utils", "accelerate>=1.3.0", "bitsandbytes"],
+            capture_output=True, text=True, timeout=300,
         )
         if result.returncode != 0:
             logger.error("Auto-install failed:\n%s\nRun manually:\npip install --upgrade --no-cache-dir \"transformers>=4.47.0\" qwen-vl-utils", result.stderr[:500])
@@ -105,7 +106,7 @@ def _load_qwen():
         logger.info("Installed to %s, adding to sys.path...", target_dir)
         sys.path.insert(0, target_dir)
         for mod in list(sys.modules.keys()):
-            if any(k in mod for k in ('transformers', 'qwen', 'tokenizers', 'huggingface', 'accelerate', 'bitsandbytes', 'safetensors', 'sentencepiece', 'regex')):
+            if any(k in mod for k in ('transformers', 'qwen', 'tokenizers', 'huggingface', 'accelerate', 'bitsandbytes', 'safetensors', 'sentencepiece')):
                 del sys.modules[mod]
         importlib.invalidate_caches()
         from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
