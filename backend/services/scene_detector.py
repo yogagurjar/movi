@@ -158,13 +158,109 @@ def _decord_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: floa
         return None
 
 
+def _opencv_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: float = 0.5) -> list[SceneInfo] | None:
+    """
+    GPU-accelerated scene detection via OpenCV decode + PyTorch CUDA histogram.
+    OpenCV avoids subprocess/pipe overhead of FFmpeg pipe.
+    """
+    import torch
+
+    try:
+        import cv2
+    except ImportError:
+        return None
+
+    device = torch.device(settings.TORCH_DEVICE)
+    if device.type != "cuda":
+        return None
+
+    fps = _get_video_fps(video_path)
+    duration = _get_video_duration(video_path)
+    if duration <= 0 or fps <= 0:
+        return None
+
+    sample_rate = max(1, int(fps / 12))
+    min_frames_sampled = max(1, int(min_scene_len * fps / sample_rate))
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return None
+
+    try:
+        prev_hist = None
+        times = [0.0]
+        frame_idx = 0
+        last_scene_frame = 0
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if frame_idx % sample_rate == 0:
+                h, w = frame.shape[:2]
+                if max(h, w) > 360:
+                    scale = 360.0 / max(h, w)
+                    new_w, new_h = int(w * scale / 2) * 2, int(h * scale / 2) * 2
+                    frame_rgb = cv2.cvtColor(cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR), cv2.COLOR_BGR2RGB)
+                else:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                tensor = torch.from_numpy(frame_rgb).to(device, non_blocking=True).float().permute(2, 0, 1)
+
+                n_ch = 3
+                hists = []
+                for c in range(n_ch):
+                    flat = tensor[c].reshape(-1)
+                    hist_c = torch.histc(flat, bins=256, min=0, max=255)
+                    hists.append(hist_c / max(hist_c.sum(), 1))
+                curr_hist = torch.stack(hists)
+
+                if prev_hist is not None:
+                    sad = torch.abs(curr_hist - prev_hist).sum().item()
+                    scene_score = sad / (n_ch * 2)
+                    pts = frame_idx / fps
+                    if scene_score > threshold and (frame_idx - last_scene_frame) >= min_frames_sampled * sample_rate:
+                        if 0.0 < pts < duration:
+                            times.append(pts)
+                            last_scene_frame = frame_idx
+
+                if frame_idx > 0 and frame_idx % (sample_rate * 50) == 0:
+                    pct = min(100, int(frame_idx * 100 / (duration * fps)))
+                    logger.info("Scene detection [OpenCV]: %d%% (%d frames, %d scenes found)", pct, frame_idx, len(times) - 1)
+
+                prev_hist = curr_hist
+
+            frame_idx += 1
+
+        times.append(duration)
+        scenes = []
+        for i in range(len(times) - 1):
+            s, e = times[i], times[i + 1]
+            if e - s >= min_scene_len:
+                scenes.append(SceneInfo(scene_index=len(scenes), start_time=round(s, 3), end_time=round(e, 3), duration=round(e - s, 3), keyframe_path=None))
+
+        logger.info("OpenCV detected %d scenes from %d frames (threshold=%.2f)", len(scenes), frame_idx, threshold)
+        return scenes
+    except Exception as e:
+        logger.warning("OpenCV scene detection failed: %s", e)
+        return None
+    finally:
+        cap.release()
+
+
 def _pytorch_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: float = 0.5) -> list[SceneInfo]:
     """
     GPU-accelerated scene detection.
-    Tier 1: decord with GPU NVDEC (fastest, full GPU pipeline).
-    Tier 2: FFmpeg pipe + PyTorch CUDA histogram (CPU decode, GPU compute).
+    Tier 1: decord with GPU NVDEC (fastest).
+    Tier 2: OpenCV + PyTorch CUDA histogram (no subprocess overhead).
+    Tier 3: FFmpeg pipe + PyTorch CUDA histogram (fallback).
     """
     scenes = _decord_scenes(video_path, threshold, min_scene_len)
+    if scenes is not None:
+        return scenes
+
+    scenes = _opencv_scenes(video_path, threshold, min_scene_len)
     if scenes is not None:
         return scenes
 
