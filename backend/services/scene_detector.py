@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import subprocess
@@ -76,10 +77,6 @@ def _get_video_resolution(video_path: Path) -> tuple[int, int]:
 
 
 def _decord_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: float = 0.5) -> list[SceneInfo] | None:
-    """
-    GPU-accelerated scene detection via decord library with CUDA context.
-    Uses GPU NVDEC decoder + PyTorch CUDA histogram. Requires `decord` with CUDA.
-    """
     import torch
 
     try:
@@ -159,11 +156,6 @@ def _decord_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: floa
 
 
 def _opencv_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: float = 0.5) -> list[SceneInfo] | None:
-    """
-    GPU-accelerated scene detection with pipelined OpenCV decode (CPU) +
-    PyTorch CUDA histogram (GPU). Decode and compute run in parallel via
-    background thread, keeping both CPU and GPU busy simultaneously.
-    """
     import torch
     from threading import Thread
     from queue import Queue
@@ -185,7 +177,6 @@ def _opencv_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: floa
     sample_rate = max(1, int(fps / 12))
     min_frames_sampled = max(1, int(min_scene_len * fps / sample_rate))
 
-    # Background thread: decode frames on CPU, put into queue
     frame_q = Queue(maxsize=32)
     def _decoder():
         cap = cv2.VideoCapture(str(video_path))
@@ -203,7 +194,6 @@ def _opencv_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: floa
                 if max(h, w) > 360:
                     scale = 360.0 / max(h, w)
                     frame = cv2.resize(frame, (int(w * scale / 2) * 2, int(h * scale / 2) * 2), interpolation=cv2.INTER_LINEAR)
-                # BGR → RGB on CPU, then push raw buffer (no GPU transfer yet)
                 frame_q.put((idx, cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
             idx += 1
         cap.release()
@@ -262,12 +252,6 @@ def _opencv_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: floa
 
 
 def _pytorch_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: float = 0.5) -> list[SceneInfo]:
-    """
-    GPU-accelerated scene detection.
-    Tier 1: decord with GPU NVDEC (fastest).
-    Tier 2: OpenCV + PyTorch CUDA histogram (no subprocess overhead).
-    Tier 3: FFmpeg pipe + PyTorch CUDA histogram (fallback).
-    """
     scenes = _decord_scenes(video_path, threshold, min_scene_len)
     if scenes is not None:
         return scenes
@@ -444,72 +428,49 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
 def extract_keyframes(video_path: Path, scenes: list[SceneInfo], keyframes_dir: Path) -> list[SceneInfo]:
     keyframes_dir.mkdir(parents=True, exist_ok=True)
     total = len(scenes)
-    logger.info("Extracting %d keyframes via FFmpeg single-pass%s...", total, " GPU" if settings.GPU_ENABLED and _ffmpeg_has_cuda() else "")
-
     fps = _get_video_fps(video_path)
-    select_parts = []
-    for scene in scenes:
-        mid = (scene.start_time + scene.end_time) / 2.0
-        frame_num = max(0, int(mid * fps))
-        select_parts.append(f"eq(n,{frame_num})")
-    select_expr = "+".join(select_parts)
+    logger.info("Extracting 3 keyframes per scene (%d scenes) via FFmpeg...", total)
 
-    # Single FFmpeg pass: sequential decode, pick specified frames, output as numbered JPEGs
-    cmd = ["ffmpeg"] + _hwaccel_flags() + [
-        "-i", str(video_path),
-        "-vf", f"select='{select_expr}',setpts=N/FRAME_RATE/TB",
-        "-vsync", "0",
-        "-q:v", "2",
-        "-y",
-        str(keyframes_dir / "kf_%05d.jpg"),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    if result.returncode != 0:
-        logger.warning("Single-pass keyframe extraction failed (%s), falling back to per-scene...", result.stderr[:200])
-        for idx, scene in enumerate(scenes):
-            if idx > 0 and idx % max(1, total // 10) == 0:
-                logger.info("Keyframe extraction: %d%% (%d/%d)", int(idx * 100 / total), idx, total)
-            mid_time = (scene.start_time + scene.end_time) / 2.0
-            kf_path = keyframes_dir / f"scene_{scene.scene_index:05d}.jpg"
-            cmd = ["ffmpeg"] + _hwaccel_flags() + ["-ss", str(mid_time), "-i", str(video_path), "-vframes", "1", "-q:v", "2", "-y", str(kf_path)]
+    for idx, scene in enumerate(scenes):
+        if idx > 0 and idx % max(1, total // 10) == 0:
+            logger.info("Keyframe extraction: %d%% (%d/%d)", int(idx * 100 / total), idx, total)
+        scene_dur = max(scene.duration, 1.0)
+        offsets = [
+            ("start", min(0.3, scene_dur * 0.2)),
+            ("mid", scene_dur / 2.0),
+            ("end", max(scene_dur - 0.3, scene_dur * 0.8)),
+        ]
+        paths = []
+        for label, offset in offsets:
+            kf_path = keyframes_dir / f"scene_{scene.scene_index:05d}_{label}.jpg"
+            time_sec = scene.start_time + offset
+            cmd = ["ffmpeg"] + _hwaccel_flags() + [
+                "-ss", str(time_sec),
+                "-i", str(video_path),
+                "-vframes", "1",
+                "-q:v", "2",
+                "-y",
+                str(kf_path),
+            ]
             subprocess.run(cmd, capture_output=True, text=True)
             if kf_path.exists() and kf_path.stat().st_size > 0:
-                scene.keyframe_path = str(kf_path)
-            else:
-                retry_cmd = ["ffmpeg"] + _hwaccel_flags() + ["-ss", str(scene.start_time + 0.1), "-i", str(video_path), "-vframes", "1", "-q:v", "2", "-y", str(kf_path)]
-                subprocess.run(retry_cmd, capture_output=True, text=True)
-                if kf_path.exists() and kf_path.stat().st_size > 0:
-                    scene.keyframe_path = str(kf_path)
-    else:
-        logger.info("Single-pass extraction complete, mapping %d keyframes...", total)
-        for i, scene in enumerate(scenes):
-            kf_path = keyframes_dir / f"kf_{i:05d}.jpg"
-            if kf_path.exists() and kf_path.stat().st_size > 0:
-                scene.keyframe_path = str(kf_path)
-            else:
-                # Single frame fallback for missed keyframes
-                mid_time = (scene.start_time + scene.end_time) / 2.0
-                fallback_path = keyframes_dir / f"scene_{scene.scene_index:05d}.jpg"
-                fallback_cmd = ["ffmpeg"] + _hwaccel_flags() + ["-ss", str(mid_time), "-i", str(video_path), "-vframes", "1", "-q:v", "2", "-y", str(fallback_path)]
-                subprocess.run(fallback_cmd, capture_output=True, text=True)
-                if fallback_path.exists() and fallback_path.stat().st_size > 0:
-                    scene.keyframe_path = str(fallback_path)
+                paths.append(str(kf_path))
+        scene.keyframe_paths = paths
+        if paths:
+            scene.keyframe_path = paths[len(paths) // 2]
 
-    extracted = sum(1 for s in scenes if s.keyframe_path is not None)
-    logger.info("Extracted %d / %d keyframes", extracted, len(scenes))
+    extracted = sum(1 for s in scenes if s.keyframe_paths)
+    logger.info("Extracted keyframes for %d / %d scenes", extracted, len(scenes))
     save_scenes(scenes, keyframes_dir.parent)
     return scenes
 
 
 def save_scenes(scenes: list[SceneInfo], scenes_dir: Path):
-    import json
     data = [s.model_dump() for s in scenes]
     (scenes_dir / "scenes.json").write_text(json.dumps(data, indent=2, default=str))
 
 
 def load_scenes(scenes_dir: Path) -> list[SceneInfo]:
-    import json
     path = scenes_dir / "scenes.json"
     if not path.exists():
         return []

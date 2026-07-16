@@ -21,6 +21,10 @@ qwen-vl-utils>=0.0.5
 bitsandbytes>=0.45.0
 accelerate>=1.3.0
 
+# Semantic search
+sentence-transformers>=3.0.0
+faiss-cpu>=1.8.0
+
 # File handling
 gdown==5.2.0
 aiofiles==24.1.0

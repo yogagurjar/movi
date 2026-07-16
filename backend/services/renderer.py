@@ -59,7 +59,40 @@ def build_timeline(match_results: list[MatchResult]) -> list[TimelineSegment]:
         seg = mr.timeline
         if seg.target_duration <= 0:
             continue
-        timeline.append(seg)
+
+        source_paths = seg.source_paths if seg.source_paths else ([seg.source_path] if seg.source_path else [])
+
+        if seg.target_duration > 8.0 and len(source_paths) >= 3:
+            split_count = 3
+            split_duration = seg.target_duration / split_count
+            for i in range(split_count):
+                img_path = source_paths[min(i, len(source_paths) - 1)]
+                split_seg = TimelineSegment(
+                    scene_index=seg.scene_index,
+                    source_path=img_path,
+                    source_paths=[img_path],
+                    target_duration=split_duration,
+                    voice_segment_index=seg.voice_segment_index,
+                    voice_text=seg.voice_text,
+                )
+                timeline.append(split_seg)
+        elif seg.target_duration > 5.0 and len(source_paths) >= 2:
+            split_count = 2
+            split_duration = seg.target_duration / split_count
+            for i in range(split_count):
+                img_path = source_paths[min(i, len(source_paths) - 1)]
+                split_seg = TimelineSegment(
+                    scene_index=seg.scene_index,
+                    source_path=img_path,
+                    source_paths=[img_path],
+                    target_duration=split_duration,
+                    voice_segment_index=seg.voice_segment_index,
+                    voice_text=seg.voice_text,
+                )
+                timeline.append(split_seg)
+        else:
+            timeline.append(seg)
+
     logger.info("Timeline built: %d image segments", len(timeline))
     return timeline
 

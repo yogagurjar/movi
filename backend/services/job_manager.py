@@ -5,7 +5,6 @@ import uuid
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 from backend.config import settings
@@ -19,7 +18,9 @@ from backend.models import (
 )
 from backend.services.audio_extractor import convert_audio_to_wav, extract_audio_from_video
 from backend.services.downloader import download_from_gdrive, cleanup_job_files
-from backend.services.matcher import match_voice_to_scenes
+from backend.services.event_extractor import extract_events
+from backend.services.scene_indexer import index_scenes, load_scene_index
+from backend.services.matcher import match_events_to_scenes
 from backend.services.renderer import build_timeline, render_video
 from backend.services.scene_detector import detect_scenes, extract_keyframes, load_scenes
 from backend.services.transcriber import transcribe_audio, load_transcript
@@ -125,8 +126,9 @@ def _run_pipeline(job_id: str, movie_url: str, voiceover_url: str, use_local_pat
     kf_dir = settings.KEYFRAMES_DIR / job_id
     output_dir = settings.OUTPUT_DIR / job_id
     transcript_dir = settings.TRANSCRIPT_DIR / job_id
+    index_dir = settings.SCENE_INDEX_DIR / job_id
 
-    for d in [job_dir, scenes_dir, kf_dir, output_dir, transcript_dir]:
+    for d in [job_dir, scenes_dir, kf_dir, output_dir, transcript_dir, index_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
     stats = ProcessingStats()
@@ -161,12 +163,12 @@ def _run_pipeline(job_id: str, movie_url: str, voiceover_url: str, use_local_pat
         if not checkpoint:
             movie_ext = movie_path.suffix.lower()
             if movie_ext in (".mp4", ".mkv", ".avi", ".mov", ".webm"):
-                _update_job(job_id, JobStatus.EXTRACTING_AUDIO, "Extracting movie audio...", 10.0)
+                _update_job(job_id, JobStatus.EXTRACTING_AUDIO, "Extracting movie audio...", 8.0)
                 movie_audio = extract_audio_from_video(movie_path, transcript_dir / "movie_audio")
             else:
                 movie_audio = convert_audio_to_wav(movie_path, transcript_dir / "movie_audio")
 
-            _update_job(job_id, JobStatus.EXTRACTING_AUDIO, "Converting voiceover...", 12.0)
+            _update_job(job_id, JobStatus.EXTRACTING_AUDIO, "Converting voiceover...", 10.0)
             voice_wav = convert_audio_to_wav(voiceover_path, transcript_dir / "voiceover")
             _checkpoint(job_id, "audio_extracted")
         else:
@@ -175,18 +177,30 @@ def _run_pipeline(job_id: str, movie_url: str, voiceover_url: str, use_local_pat
 
         checkpoint = _did_checkpoint(job_id, "transcribed")
         if not checkpoint:
-            _update_job(job_id, JobStatus.TRANSCRIBING, "Transcribing voiceover...", 15.0)
+            _update_job(job_id, JobStatus.TRANSCRIBING, "Transcribing voiceover...", 13.0)
             voice_transcript = transcribe_audio(voice_wav)
             stats.total_voice_segments = len(voice_transcript.segments)
-            logger.info("Voiceover: %d segments, %.1f sec", stats.total_voice_segments, voice_transcript.duration_sec)
+            logger.info("Voiceover: %d segments, %.1f sec",
+                        stats.total_voice_segments, voice_transcript.duration_sec)
+
+            _update_job(job_id, JobStatus.TRANSCRIBING, "Transcribing movie audio for context...", 17.0)
+            try:
+                movie_transcript = transcribe_audio(movie_audio)
+                stats.total_scenes = len(movie_transcript.segments)
+                logger.info("Movie transcript: %d segments, %.1f sec",
+                            len(movie_transcript.segments), movie_transcript.duration_sec)
+            except Exception as e:
+                logger.warning("Movie transcription failed (non-fatal): %s", e)
+                movie_transcript = None
             _checkpoint(job_id, "transcribed")
         else:
             logger.info("Checkpoint: transcription already complete, skipping")
             voice_transcript = load_transcript(transcript_dir)
+            movie_transcript = None
 
         checkpoint = _did_checkpoint(job_id, "scenes_detected")
         if not checkpoint:
-            _update_job(job_id, JobStatus.DETECTING_SCENES, "Detecting scenes...", 30.0)
+            _update_job(job_id, JobStatus.DETECTING_SCENES, "Detecting scenes...", 25.0)
             scenes = detect_scenes(movie_path, scenes_dir)
             stats.total_scenes = len(scenes)
             _checkpoint(job_id, "scenes_detected")
@@ -196,31 +210,49 @@ def _run_pipeline(job_id: str, movie_url: str, voiceover_url: str, use_local_pat
 
         checkpoint = _did_checkpoint(job_id, "keyframes_extracted")
         if not checkpoint:
-            _update_job(job_id, JobStatus.EXTRACTING_KEYFRAMES, "Extracting keyframes...", 35.0)
+            _update_job(job_id, JobStatus.EXTRACTING_KEYFRAMES, "Extracting keyframes...", 30.0)
             scenes = extract_keyframes(movie_path, scenes, kf_dir)
             _checkpoint(job_id, "keyframes_extracted")
         else:
             logger.info("Checkpoint: keyframes already extracted, skipping")
-            scenes = [s for s in scenes if s.keyframe_path and Path(s.keyframe_path).exists()]
+
+        checkpoint = _did_checkpoint(job_id, "scenes_indexed")
+        if not checkpoint:
+            _update_job(job_id, JobStatus.INDEXING_SCENES, "Indexing scenes with Qwen + FAISS...", 40.0)
+            movie_dialogue = movie_transcript.full_text if movie_transcript else ""
+            scene_indices = index_scenes(scenes, index_dir, movie_dialogue)
+            _checkpoint(job_id, "scenes_indexed")
+        else:
+            logger.info("Checkpoint: scenes already indexed, skipping")
+            scene_indices, _ = load_scene_index(index_dir)
+            if not scene_indices:
+                scene_indices = []
+
+        checkpoint = _did_checkpoint(job_id, "events_extracted")
+        if not checkpoint:
+            _update_job(job_id, JobStatus.EXTRACTING_EVENTS, "Extracting events from voiceover...", 55.0)
+            events = extract_events(voice_transcript.segments, use_llm=False)
+            stats.matched_segments = len(events)
+            _checkpoint(job_id, "events_extracted")
+        else:
+            logger.info("Checkpoint: events already extracted, skipping")
+            events = []
 
         checkpoint = _did_checkpoint(job_id, "matched")
         if not checkpoint:
-            _update_job(job_id, JobStatus.MATCHING, "Matching voiceover to scenes...", 50.0)
-            match_results = match_voice_to_scenes(voice_transcript.segments, scenes)
+            _update_job(job_id, JobStatus.MATCHING, "Matching events to scenes via FAISS + Qwen...", 60.0)
+            _, faiss_index = load_scene_index(index_dir)
+            match_results = match_events_to_scenes(events, scene_indices, faiss_index)
             stats.matched_segments = sum(1 for m in match_results if m.timeline is not None)
-            stats.skipped_segments = stats.total_voice_segments - stats.matched_segments
-            stats.total_clip_candidates = sum(len(m.candidates) for m in match_results)
+            stats.skipped_segments = len(events) - stats.matched_segments
             _checkpoint(job_id, "matched")
         else:
-            logger.info("Checkpoint: matching already complete, skipping")
-            # Load match results from checkpoint (re-build timeline from saved)
-            match_results = []
             logger.info("Checkpoint: matching already complete, skipping")
             match_results = []
 
         checkpoint = _did_checkpoint(job_id, "rendered")
         if not checkpoint:
-            _update_job(job_id, JobStatus.RENDERING, "Building timeline and rendering...", 70.0)
+            _update_job(job_id, JobStatus.RENDERING, "Building timeline and rendering...", 80.0)
             timeline = build_timeline(match_results)
             if not timeline:
                 raise RuntimeError("No segments matched, cannot render")
@@ -322,8 +354,12 @@ def get_job_status(job_id: str) -> JobStatusResponse | None:
         remaining = 360
     elif job["status"] == JobStatus.EXTRACTING_KEYFRAMES:
         remaining = 300
+    elif job["status"] == JobStatus.INDEXING_SCENES:
+        remaining = 600
+    elif job["status"] == JobStatus.EXTRACTING_EVENTS:
+        remaining = 120
     elif job["status"] == JobStatus.MATCHING:
-        remaining = 240
+        remaining = 480
     elif job["status"] == JobStatus.RENDERING:
         remaining = 180
     elif job["status"] in (JobStatus.COMPLETED, JobStatus.FAILED):

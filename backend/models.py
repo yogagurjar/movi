@@ -11,9 +11,10 @@ class JobStatus(str, Enum):
     TRANSCRIBING = "transcribing"
     DETECTING_SCENES = "detecting_scenes"
     EXTRACTING_KEYFRAMES = "extracting_keyframes"
+    INDEXING_SCENES = "indexing_scenes"
+    EXTRACTING_EVENTS = "extracting_events"
     MATCHING = "matching"
     RENDERING = "rendering"
-    CLEANING = "cleaning"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -50,6 +51,7 @@ class SceneInfo(BaseModel):
     end_time: float
     duration: float
     keyframe_path: Optional[str] = None
+    keyframe_paths: list[str] = []
 
 
 class TranscriptionWord(BaseModel):
@@ -89,14 +91,15 @@ class VerificationResult(BaseModel):
 
 class TimelineSegment(BaseModel):
     scene_index: int
-    source_path: str
-    trim_start: float
-    trim_end: float
-    original_duration: float
-    target_duration: float
-    speed_factor: float
-    voice_segment_index: int
-    voice_text: str
+    source_path: str = ""
+    source_paths: list[str] = []
+    trim_start: float = 0.0
+    trim_end: float = 0.0
+    original_duration: float = 0.0
+    target_duration: float = 0.0
+    speed_factor: float = 1.0
+    voice_segment_index: int = 0
+    voice_text: str = ""
 
 
 class MatchResult(BaseModel):
@@ -104,9 +107,33 @@ class MatchResult(BaseModel):
     voice_text: str
     voice_start: float
     voice_end: float
-    candidates: list[ClipMatchCandidate]
+    candidates: list[ClipMatchCandidate] = []
     verification: Optional[VerificationResult] = None
     timeline: Optional[TimelineSegment] = None
+
+
+class SceneIndex(BaseModel):
+    scene_index: int
+    start_time: float
+    end_time: float
+    duration: float
+    keyframe_paths: list[str]
+    summary: str = ""
+    characters: list[str] = []
+    location: str = ""
+    emotion: str = ""
+    objects: list[str] = []
+    actions: list[str] = []
+    dialogue: str = ""
+
+
+class EventSegment(BaseModel):
+    event_index: int
+    text: str
+    start: float
+    end: float
+    duration: float
+    segment_indices: list[int]
 
 
 class GpuInfo(BaseModel):

@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     TRANSCRIPT_DIR: Path = BASE_DIR / "data" / "transcripts"
     JOBS_DIR: Path = BASE_DIR / "data" / "jobs"
     LOG_DIR: Path = BASE_DIR / "data" / "logs"
+    SCENE_INDEX_DIR: Path = BASE_DIR / "data" / "scene_index"
 
     GPU_ENABLED: bool = True
     TORCH_DEVICE: str = "cuda"
@@ -31,7 +32,11 @@ class Settings(BaseSettings):
     CLIP_PRETRAINED: str = "laion2b_s34b_b79k"
     CLIP_BATCH_SIZE: int = 64
 
-    QWEN_MODEL_NAME: str = "Qwen/Qwen2.5-VL-3B-Instruct"
+    QWEN_MODEL_NAME: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+
+    EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
+    EMBEDDING_DIM: int = 384
+    FAISS_TOP_K: int = 10
 
     CONFIDENCE_ACCEPT: float = 0.85
     CONFIDENCE_FALLBACK: float = 0.50
@@ -65,7 +70,8 @@ class Settings(BaseSettings):
     def model_post_init(self, __context):
         dirs = [
             self.DOWNLOAD_DIR, self.SCENES_DIR, self.KEYFRAMES_DIR,
-            self.OUTPUT_DIR, self.TRANSCRIPT_DIR, self.JOBS_DIR, self.LOG_DIR
+            self.OUTPUT_DIR, self.TRANSCRIPT_DIR, self.JOBS_DIR,
+            self.LOG_DIR, self.SCENE_INDEX_DIR
         ]
         for d in dirs:
             d.mkdir(parents=True, exist_ok=True)
