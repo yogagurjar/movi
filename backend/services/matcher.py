@@ -84,15 +84,38 @@ def _load_qwen():
         return
     _device = torch.device(settings.TORCH_DEVICE)
 
+    import importlib, subprocess, sys
     try:
         import transformers as _tf
         if tuple(int(x) for x in _tf.__version__.split(".")[:2]) < (4, 47):
-            logger.warning("transformers %s too old, need >=4.47.0. Run: pip install --upgrade transformers>=4.47.0 qwen-vl-utils", _tf.__version__)
-            return
+            raise ImportError(f"transformers {_tf.__version__} too old")
         from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
-    except ImportError as _e:
-        logger.warning("transformers >=4.47.0 not found. Run: pip install --upgrade transformers>=4.47.0 qwen-vl-utils | Error: %s", _e)
-        return
+    except (ImportError, AttributeError):
+        logger.info("Installing transformers>=4.47.0 (--user) for Qwen...")
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--user", "--upgrade", "--no-cache-dir",
+             "transformers>=4.47.0", "qwen-vl-utils"],
+            capture_output=True, text=True, timeout=180,
+        )
+        logger.info("pip --user output: %s", result.stdout[:500] if result.returncode == 0 else result.stderr[:500])
+        if result.returncode != 0:
+            logger.error("Auto-install failed. Run manually: pip install --user --upgrade transformers>=4.47.0 qwen-vl-utils")
+            return
+        for mod in list(sys.modules.keys()):
+            if 'transformers' in mod or 'qwen' in mod or 'tokenizers' in mod or 'huggingface' in mod or 'accelerate' in mod or 'bitsandbytes' in mod:
+                del sys.modules[mod]
+        importlib.invalidate_caches()
+        user_site = subprocess.run(
+            [sys.executable, "-m", "site", "--user-site"],
+            capture_output=True, text=True
+        ).stdout.strip()
+        if user_site and user_site not in sys.path:
+            sys.path.insert(0, user_site)
+        try:
+            from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
+        except ImportError:
+            logger.error("Still cannot import after install. Restart the server manually.")
+            return
 
     try:
         logger.info("Loading Qwen2.5-VL-3B-Instruct with 4-bit quantization on %s...", _device)
