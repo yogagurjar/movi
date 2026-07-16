@@ -131,7 +131,7 @@ def _pytorch_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: flo
             if not raw or len(raw) < frame_bytes:
                 break
 
-            frame_np = np.frombuffer(raw, dtype=np.uint8).reshape(out_h, out_w, 3)
+            frame_np = np.frombuffer(raw, dtype=np.uint8).reshape(out_h, out_w, 3).copy()
             frame = torch.from_numpy(frame_np).to(device, non_blocking=True).float().permute(2, 0, 1)
 
             n_ch = 3
