@@ -51,38 +51,16 @@ def _fwaccel_flags() -> list[str]:
     return []
 
 
-def _clamp_speed(required: float) -> float:
-    low = 1.0 - settings.SPEED_MAX_DELTA
-    high = 1.0 + settings.SPEED_MAX_DELTA
-    return max(low, min(high, required))
-
-
 def build_timeline(match_results: list[MatchResult]) -> list[TimelineSegment]:
     timeline: list[TimelineSegment] = []
     for mr in match_results:
         if mr.timeline is None:
             continue
         seg = mr.timeline
-        if seg.original_duration <= 0:
+        if seg.target_duration <= 0:
             continue
-
-        required = seg.original_duration / seg.target_duration if seg.target_duration > 0 else 1.0
-        speed = _clamp_speed(required)
-
-        adjusted = TimelineSegment(
-            scene_index=seg.scene_index,
-            source_path=seg.source_path,
-            trim_start=seg.trim_start,
-            trim_end=seg.trim_end,
-            original_duration=seg.original_duration,
-            target_duration=seg.original_duration / speed,
-            speed_factor=round(speed, 4),
-            voice_segment_index=seg.voice_segment_index,
-            voice_text=seg.voice_text,
-        )
-        timeline.append(adjusted)
-
-    logger.info("Timeline built: %d segments", len(timeline))
+        timeline.append(seg)
+    logger.info("Timeline built: %d image segments", len(timeline))
     return timeline
 
 
@@ -96,7 +74,7 @@ def render_video(
         raise ValueError("Timeline is empty, nothing to render")
 
     output_path = output_path.with_suffix(".mp4")
-    logger.info("Rendering %d segments to %s", len(timeline), output_path.name)
+    logger.info("Rendering %d image segments to %s", len(timeline), output_path.name)
 
     temp_dir = output_path.parent / f"_render_{uuid.uuid4().hex[:8]}"
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -109,7 +87,7 @@ def render_video(
             if i > 0 and i % log_interval == 0:
                 logger.info("Rendering segments: %d%% (%d/%d)", int(i * 100 / seg_total), i, seg_total)
             seg_path = temp_dir / f"seg_{i:05d}.ts"
-            _render_segment(movie_path, seg, seg_path)
+            _render_segment(seg, seg_path)
             segment_files.append(seg_path)
 
         concat_path = temp_dir / "concat.txt"
@@ -159,12 +137,12 @@ def render_video(
     return output_path
 
 
-def _render_segment(movie_path: Path, seg: TimelineSegment, output_path: Path):
-    speed = seg.speed_factor
-    trim_start = seg.trim_start
-    trim_end = seg.trim_end
+def _render_segment(seg: TimelineSegment, output_path: Path):
+    image_path = seg.source_path
+    duration = seg.target_duration
 
-    setpts = f"PTS/{speed}" if speed != 1.0 else "PTS"
+    if not image_path or not Path(image_path).exists():
+        raise FileNotFoundError(f"Keyframe not found: {image_path}")
 
     codec = _video_codec()
     pixel_fmt = _pixel_fmt()
@@ -172,17 +150,17 @@ def _render_segment(movie_path: Path, seg: TimelineSegment, output_path: Path):
     cmd = [
         "ffmpeg",
         "-y",
-    ]
-    cmd.extend(_fwaccel_flags())
-    cmd.extend(["-i", str(movie_path), "-vf",
-        f"trim=start={trim_start}:end={trim_end},setpts={setpts},"
+        "-loop", "1",
+        "-i", str(image_path),
+        "-vf",
         f"scale={settings.OUTPUT_WIDTH}:{settings.OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,"
         f"pad={settings.OUTPUT_WIDTH}:{settings.OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2",
         "-an",
         "-c:v", codec,
         "-pix_fmt", pixel_fmt,
         "-r", str(settings.OUTPUT_FPS),
-    ])
+        "-t", str(duration),
+    ]
     if codec == "h264_nvenc":
         cmd.extend(["-preset", "p2", "-tune", "hq", "-rc", "vbr", "-cq", str(settings.OUTPUT_CRF), "-b:v", "20M"])
     cmd.append(str(output_path))
