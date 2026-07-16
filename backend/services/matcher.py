@@ -93,23 +93,26 @@ def _load_qwen():
         from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
     except (ImportError, AttributeError):
         target_dir = str(Path(__file__).resolve().parent.parent / ".transformers_deps")
-        logger.info("Installing transformers>=4.47.0 + accelerate to %s for Qwen...", target_dir)
+        logger.info("Installing Qwen deps to %s...", target_dir)
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir",
              "--target", target_dir,
-             "transformers>=4.47.0", "qwen-vl-utils", "accelerate>=1.3.0", "bitsandbytes"],
+             "numpy==1.26.4", "transformers==4.47.1", "accelerate==1.3.0",
+             "qwen-vl-utils", "bitsandbytes"],
             capture_output=True, text=True, timeout=300,
         )
         if result.returncode != 0:
-            logger.error("Auto-install failed:\n%s\nRun manually:\npip install --upgrade --no-cache-dir \"transformers>=4.47.0\" qwen-vl-utils", result.stderr[:500])
-            raise RuntimeError("Qwen dependencies required")
-        logger.info("Installed to %s, adding to sys.path...", target_dir)
+            logger.error("Auto-install failed:\n%s", result.stderr[:500])
+            raise RuntimeError("Qwen dependencies required; run notebook cell: pip install numpy==1.26.4 transformers==4.47.1 accelerate==1.3.0 bitsandbytes qwen-vl-utils")
+        logger.info("Installed, adding %s to sys.path...", target_dir)
         sys.path.insert(0, target_dir)
-        for mod in list(sys.modules.keys()):
-            if any(k in mod for k in ('transformers', 'qwen', 'tokenizers', 'huggingface', 'accelerate', 'bitsandbytes', 'safetensors', 'sentencepiece')):
+        for mod in list(sys.modules):
+            if mod.startswith(('numpy', 'transformers', 'accelerate', 'bitsandbytes', 'qwen', 'tokenizers', 'huggingface', 'safetensors', 'sentencepiece')):
                 del sys.modules[mod]
         importlib.invalidate_caches()
+        import numpy as np
         from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
+        logger.info("numpy: %s (%s)", np.__version__, np.__file__)
 
     try:
         logger.info("Loading Qwen2.5-VL-3B-Instruct with 4-bit quantization on %s...", _device)
