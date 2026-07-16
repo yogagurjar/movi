@@ -75,12 +75,94 @@ def _get_video_resolution(video_path: Path) -> tuple[int, int]:
     return int(parts[0]), int(parts[1])
 
 
+def _decord_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: float = 0.5) -> list[SceneInfo] | None:
+    """
+    GPU-accelerated scene detection via decord library with CUDA context.
+    Uses GPU NVDEC decoder + PyTorch CUDA histogram. Requires `decord` with CUDA.
+    """
+    import torch
+
+    try:
+        import decord
+    except ImportError:
+        return None
+
+    device = torch.device(settings.TORCH_DEVICE)
+    if device.type != "cuda":
+        return None
+
+    fps = _get_video_fps(video_path)
+    duration = _get_video_duration(video_path)
+    if duration <= 0 or fps <= 0:
+        return None
+
+    sample_rate = max(1, int(fps / 12))
+    min_frames = max(1, int(min_scene_len * fps))
+    min_frames_sampled = max(1, int(min_frames / sample_rate))
+    pts_step = sample_rate / fps
+
+    try:
+        decord.bridge.set_bridge("torch")
+        vr = decord.VideoReader(str(video_path), ctx=decord.gpu(0))
+        num_frames = len(vr)
+        logger.info("Detecting scenes via decord GPU (%d frames, sample every %d)...", num_frames, sample_rate)
+
+        prev_hist = None
+        times = [0.0]
+        frame_idx = 0
+        last_scene_frame = 0
+
+        for i in range(0, num_frames, sample_rate):
+            frame = vr[i].float().to(device, non_blocking=True)
+            frame = frame.permute(2, 0, 1)
+
+            n_ch = 3
+            hists = []
+            for c in range(n_ch):
+                flat = frame[c].reshape(-1)
+                hist_c = torch.histc(flat, bins=256, min=0, max=255)
+                hists.append(hist_c / max(hist_c.sum(), 1))
+            curr_hist = torch.stack(hists)
+
+            if prev_hist is not None:
+                sad = torch.abs(curr_hist - prev_hist).sum().item()
+                scene_score = sad / (n_ch * 2)
+                pts = i / fps
+
+                if scene_score > threshold and (frame_idx - last_scene_frame) >= min_frames_sampled:
+                    if 0.0 < pts < duration:
+                        times.append(pts)
+                        last_scene_frame = frame_idx
+
+            prev_hist = curr_hist
+            frame_idx += 1
+
+        times.append(duration)
+
+        scenes = []
+        for i in range(len(times) - 1):
+            s, e = times[i], times[i + 1]
+            if e - s >= min_scene_len:
+                scenes.append(SceneInfo(scene_index=len(scenes), start_time=round(s, 3), end_time=round(e, 3), duration=round(e - s, 3), keyframe_path=None))
+
+        logger.info("decord GPU detected %d scenes from %d sampled frames (threshold=%.2f)", len(scenes), frame_idx, threshold)
+        return scenes
+
+    except Exception as e:
+        logger.warning("decord GPU failed: %s", e)
+        return None
+
+
 def _pytorch_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: float = 0.5) -> list[SceneInfo]:
     """
-    GPU-accelerated scene detection matching FFmpeg's histogram-based approach.
-    Uses FFmpeg pipe for frame decoding + PyTorch CUDA for per-channel histogram SAD.
-    Avoids deprecated torchvision VideoReader (broken in torchvision >=0.22).
+    GPU-accelerated scene detection.
+    Tier 1: decord with GPU NVDEC (fastest, full GPU pipeline).
+    Tier 2: FFmpeg pipe + PyTorch CUDA histogram (CPU decode, GPU compute).
     """
+    scenes = _decord_scenes(video_path, threshold, min_scene_len)
+    if scenes is not None:
+        return scenes
+
     import numpy as np
     import torch
 
@@ -99,7 +181,6 @@ def _pytorch_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: flo
     min_frames_sampled = max(1, int(min_frames / sample_rate))
     pts_step = sample_rate / fps
 
-    # Scale to ~360px for pipe efficiency
     scale = 360.0 / max(width, height)
     out_w = int(width * scale / 2) * 2
     out_h = int(height * scale / 2) * 2
@@ -109,8 +190,8 @@ def _pytorch_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: flo
     logger.info("Detecting scenes via FFmpeg pipe + PyTorch CUDA (%dx%d, sample every %d frame)...", out_w, out_h, sample_rate)
 
     select_expr = f"not(mod(n,{sample_rate}))"
-    cmd = [
-        "ffmpeg", "-i", str(video_path),
+    cmd = ["ffmpeg"] + _hwaccel_flags() + [
+        "-i", str(video_path),
         "-vf", f"select='{select_expr}',setpts=N/FRAME_RATE/TB,scale={out_w}:{out_h}",
         "-f", "rawvideo", "-pix_fmt", "rgb24",
         "-vsync", "0", "-an",
@@ -163,11 +244,11 @@ def _pytorch_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: flo
             if e - s >= min_scene_len:
                 scenes.append(SceneInfo(scene_index=len(scenes), start_time=round(s, 3), end_time=round(e, 3), duration=round(e - s, 3), keyframe_path=None))
 
-        logger.info("PyTorch CUDA histogram detected %d scenes from %d sampled frames (threshold=%.2f)", len(scenes), frame_idx, threshold)
+        logger.info("FFmpeg pipe detected %d scenes from %d sampled frames (threshold=%.2f)", len(scenes), frame_idx, threshold)
         return scenes
 
     except Exception as e:
-        logger.warning("PyTorch scene detection failed: %s", e)
+        logger.warning("FFmpeg pipe scene detection failed: %s", e)
         return []
     finally:
         proc.stdout.close()
