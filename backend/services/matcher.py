@@ -170,11 +170,9 @@ def _qwen_verify(
                 }
             ]
             text = _qwen_processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            from qwen_vl_utils import process_vision_info
-            image_inputs, _ = process_vision_info(messages)
             inputs = _qwen_processor(
                 text=[text],
-                images=image_inputs,
+                images=[img],
                 padding=True,
                 return_tensors="pt",
             ).to(_device)

@@ -132,7 +132,7 @@ def render_video(
             "-s", f"{settings.OUTPUT_WIDTH}x{settings.OUTPUT_HEIGHT}",
         ])
 
-        if settings.GPU_ENABLED:
+        if codec == "h264_nvenc":
             cmd.extend(["-preset", "p2", "-tune", "hq", "-rc", "vbr", "-cq", str(settings.OUTPUT_CRF)])
             cmd.extend(["-b:v", "20M"])
         else:
@@ -183,10 +183,10 @@ def _render_segment(movie_path: Path, seg: TimelineSegment, output_path: Path):
         "-pix_fmt", pixel_fmt,
         "-r", str(settings.OUTPUT_FPS),
     ])
-    if settings.GPU_ENABLED:
+    if codec == "h264_nvenc":
         cmd.extend(["-preset", "p2", "-tune", "hq", "-rc", "vbr", "-cq", str(settings.OUTPUT_CRF), "-b:v", "20M"])
     cmd.append(str(output_path))
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"Segment render failed for scene {seg.scene_index}:\n{result.stderr[:1000]}")
+        raise RuntimeError(f"Segment render failed for scene {seg.scene_index}:\n{result.stderr[:2000]}")
