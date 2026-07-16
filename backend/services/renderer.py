@@ -10,6 +10,7 @@ from backend.models import MatchResult, TimelineSegment
 logger = logging.getLogger(__name__)
 
 _FFMPEG_HAS_CUDA: bool | None = None
+_FFMPEG_HAS_NVENC: bool | None = None
 
 
 def _probe_ffmpeg_cuda() -> bool:
@@ -21,6 +22,27 @@ def _probe_ffmpeg_cuda() -> bool:
         except Exception:
             _FFMPEG_HAS_CUDA = False
     return _FFMPEG_HAS_CUDA
+
+
+def _probe_nvenc() -> bool:
+    global _FFMPEG_HAS_NVENC
+    if _FFMPEG_HAS_NVENC is None:
+        try:
+            result = subprocess.run(["ffmpeg", "-encoders"], capture_output=True, text=True, timeout=15)
+            _FFMPEG_HAS_NVENC = "h264_nvenc" in result.stdout
+        except Exception:
+            _FFMPEG_HAS_NVENC = False
+    return _FFMPEG_HAS_NVENC
+
+
+def _video_codec() -> str:
+    if settings.GPU_ENABLED and _probe_nvenc():
+        return "h264_nvenc"
+    return "libx264"
+
+
+def _pixel_fmt() -> str:
+    return "p010le" if _video_codec() == "h264_nvenc" else "yuv420p"
 
 
 def _fwaccel_flags() -> list[str]:
@@ -95,8 +117,8 @@ def render_video(
             for sf in segment_files:
                 f.write(f"file '{sf.resolve()}'\n")
 
-        codec = settings.OUTPUT_CODEC if settings.GPU_ENABLED else "libx264"
-        pixel_fmt = "p010le" if settings.GPU_ENABLED else "yuv420p"
+        codec = _video_codec()
+        pixel_fmt = _pixel_fmt()
 
         cmd = [
             "ffmpeg",
@@ -144,8 +166,8 @@ def _render_segment(movie_path: Path, seg: TimelineSegment, output_path: Path):
 
     setpts = f"PTS/{speed}" if speed != 1.0 else "PTS"
 
-    codec = settings.OUTPUT_CODEC if settings.GPU_ENABLED else "libx264"
-    pixel_fmt = "p010le" if settings.GPU_ENABLED else "yuv420p"
+    codec = _video_codec()
+    pixel_fmt = _pixel_fmt()
 
     cmd = [
         "ffmpeg",
