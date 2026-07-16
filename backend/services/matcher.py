@@ -83,49 +83,34 @@ def _load_qwen():
     if _qwen_model is not None:
         return
     _device = torch.device(settings.TORCH_DEVICE)
-    logger.info("Loading Qwen2.5-VL-3B-Instruct with 4-bit quantization on %s...", _device)
-    import importlib
+
     try:
         import transformers as _tf
         if tuple(int(x) for x in _tf.__version__.split(".")[:2]) < (4, 47):
-            raise ImportError(f"transformers {_tf.__version__} too old, need >=4.47.0")
+            logger.warning("transformers %s too old, need >=4.47.0. Run: pip install --upgrade transformers>=4.47.0 qwen-vl-utils", _tf.__version__)
+            return
         from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
-    except (ImportError, AttributeError):
-        import subprocess, sys
-        logger.info("Installing/upgrading transformers>=4.47.0 and qwen-vl-utils...")
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir",
-             "transformers>=4.47.0", "qwen-vl-utils"],
-            capture_output=True, text=True, timeout=180,
+    except ImportError as _e:
+        logger.warning("transformers >=4.47.0 not found. Run: pip install --upgrade transformers>=4.47.0 qwen-vl-utils | Error: %s", _e)
+        return
+
+    try:
+        logger.info("Loading Qwen2.5-VL-3B-Instruct with 4-bit quantization on %s...", _device)
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
         )
-        if result.returncode != 0:
-            logger.error("pip install failed:\n%s\n%s", result.stdout[:500], result.stderr[:500])
-            raise RuntimeError(f"Failed to upgrade transformers. Run manually:\n"
-                               f"pip install --upgrade --no-cache-dir \"transformers>=4.47.0\" qwen-vl-utils")
-        logger.info("pip install succeeded:\n%s", result.stdout[:300])
-        for mod in list(sys.modules.keys()):
-            if 'transformers' in mod or 'qwen' in mod:
-                del sys.modules[mod]
-        importlib.invalidate_caches()
-        try:
-            import transformers as _tf2
-            logger.info("transformers version after upgrade: %s", _tf2.__version__)
-        except Exception:
-            pass
-        from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-    )
-    _qwen_model = AutoModelForVision2Seq.from_pretrained(
-        settings.QWEN_MODEL_NAME,
-        quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=torch.float16,
-    )
-    _qwen_processor = AutoProcessor.from_pretrained(settings.QWEN_MODEL_NAME)
+        _qwen_model = AutoModelForVision2Seq.from_pretrained(
+            settings.QWEN_MODEL_NAME,
+            quantization_config=bnb_config,
+            device_map="auto",
+            torch_dtype=torch.float16,
+        )
+        _qwen_processor = AutoProcessor.from_pretrained(settings.QWEN_MODEL_NAME)
+    except Exception as e:
+        logger.warning("Failed to load Qwen model: %s", e)
 
 
 def _resize_for_qwen(image_path: str, max_size: int = 1024):
@@ -143,7 +128,7 @@ def _qwen_verify(
     candidate_scenes: list[tuple[int, str]],
 ) -> list[tuple[int, float, str]]:
     _load_qwen()
-    if not candidate_scenes:
+    if _qwen_model is None or not candidate_scenes:
         return []
     results: list[tuple[int, float, str]] = []
     for scene_idx, kf_path in candidate_scenes:
