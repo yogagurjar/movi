@@ -93,15 +93,25 @@ def _load_qwen():
     except (ImportError, AttributeError):
         import subprocess, sys
         logger.info("Installing/upgrading transformers>=4.47.0 and qwen-vl-utils...")
-        subprocess.check_call(
+        result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir",
-             "transformers>=4.47.0", "qwen-vl-utils", "-q"],
-            timeout=180,
+             "transformers>=4.47.0", "qwen-vl-utils"],
+            capture_output=True, text=True, timeout=180,
         )
+        if result.returncode != 0:
+            logger.error("pip install failed:\n%s\n%s", result.stdout[:500], result.stderr[:500])
+            raise RuntimeError(f"Failed to upgrade transformers. Run manually:\n"
+                               f"pip install --upgrade --no-cache-dir \"transformers>=4.47.0\" qwen-vl-utils")
+        logger.info("pip install succeeded:\n%s", result.stdout[:300])
         for mod in list(sys.modules.keys()):
             if 'transformers' in mod or 'qwen' in mod:
                 del sys.modules[mod]
         importlib.invalidate_caches()
+        try:
+            import transformers as _tf2
+            logger.info("transformers version after upgrade: %s", _tf2.__version__)
+        except Exception:
+            pass
         from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
