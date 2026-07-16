@@ -85,37 +85,30 @@ def _load_qwen():
     _device = torch.device(settings.TORCH_DEVICE)
 
     import importlib, subprocess, sys
+    from pathlib import Path
     try:
         import transformers as _tf
         if tuple(int(x) for x in _tf.__version__.split(".")[:2]) < (4, 47):
             raise ImportError(f"transformers {_tf.__version__} too old")
         from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
     except (ImportError, AttributeError):
-        logger.info("Installing transformers>=4.47.0 (--user) for Qwen...")
+        target_dir = str(Path(__file__).resolve().parent.parent / ".transformers_deps")
+        logger.info("Installing transformers>=4.47.0 to %s for Qwen...", target_dir)
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--user", "--upgrade", "--no-cache-dir",
-             "transformers>=4.47.0", "qwen-vl-utils"],
+            [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir",
+             "--target", target_dir, "transformers>=4.47.0", "qwen-vl-utils"],
             capture_output=True, text=True, timeout=180,
         )
-        logger.info("pip --user output: %s", result.stdout[:500] if result.returncode == 0 else result.stderr[:500])
         if result.returncode != 0:
-            logger.error("Auto-install failed. Run manually: pip install --user --upgrade transformers>=4.47.0 qwen-vl-utils")
-            return
+            logger.error("Auto-install failed:\n%s\nRun manually:\npip install --upgrade --no-cache-dir \"transformers>=4.47.0\" qwen-vl-utils", result.stderr[:500])
+            raise RuntimeError("Qwen dependencies required")
+        logger.info("Installed to %s, adding to sys.path...", target_dir)
+        sys.path.insert(0, target_dir)
         for mod in list(sys.modules.keys()):
-            if 'transformers' in mod or 'qwen' in mod or 'tokenizers' in mod or 'huggingface' in mod or 'accelerate' in mod or 'bitsandbytes' in mod:
+            if any(k in mod for k in ('transformers', 'qwen', 'tokenizers', 'huggingface', 'accelerate', 'bitsandbytes', 'safetensors', 'sentencepiece', 'regex')):
                 del sys.modules[mod]
         importlib.invalidate_caches()
-        user_site = subprocess.run(
-            [sys.executable, "-m", "site", "--user-site"],
-            capture_output=True, text=True
-        ).stdout.strip()
-        if user_site and user_site not in sys.path:
-            sys.path.insert(0, user_site)
-        try:
-            from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
-        except ImportError:
-            logger.error("Still cannot import after install. Restart the server manually.")
-            return
+        from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
 
     try:
         logger.info("Loading Qwen2.5-VL-3B-Instruct with 4-bit quantization on %s...", _device)
