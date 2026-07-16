@@ -201,10 +201,7 @@ def match_voice_to_scenes(
     kf_paths = [s[1] for s in valid_scenes]
     voice_texts = [seg.text for seg in voice_segments]
 
-    logger.info(
-        "Encoding %d keyframes and %d voice segments...",
-        len(kf_paths), len(voice_texts),
-    )
+    logger.info("Encoding %d keyframes and %d voice segments...", len(kf_paths), len(voice_texts))
     image_embs = _encode_images(kf_paths)
     text_embs = _encode_texts(voice_texts)
 
@@ -218,8 +215,13 @@ def match_voice_to_scenes(
 
     used_scenes: set[int] = set()
     match_results: list[MatchResult] = []
+    match_total = len(voice_segments)
+    match_log_interval = max(1, match_total // 10)
 
     for vi, seg in enumerate(voice_segments):
+        if vi > 0 and vi % match_log_interval == 0:
+            matched_so_far = sum(1 for m in match_results if m.timeline is not None)
+            logger.info("Matching: %d%% (%d/%d segments, %d matched)", int(vi * 100 / match_total), vi, match_total, matched_so_far)
         sims = sim_matrix[vi]
         top5_idx = np.argsort(sims)[::-1][:settings.TOP_K_CANDIDATES]
 

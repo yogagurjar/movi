@@ -80,8 +80,12 @@ def render_video(
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     segment_files: list[Path] = []
+    seg_total = len(timeline)
+    log_interval = max(1, seg_total // 10)
     try:
         for i, seg in enumerate(timeline):
+            if i > 0 and i % log_interval == 0:
+                logger.info("Rendering segments: %d%% (%d/%d)", int(i * 100 / seg_total), i, seg_total)
             seg_path = temp_dir / f"seg_{i:05d}.ts"
             _render_segment(movie_path, seg, seg_path)
             segment_files.append(seg_path)

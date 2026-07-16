@@ -111,6 +111,7 @@ def _decord_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: floa
         times = [0.0]
         frame_idx = 0
         last_scene_frame = 0
+        log_interval = max(1, num_frames // (sample_rate * 10))
 
         for i in range(0, num_frames, sample_rate):
             frame = vr[i].float().to(device, non_blocking=True)
@@ -133,6 +134,10 @@ def _decord_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: floa
                     if 0.0 < pts < duration:
                         times.append(pts)
                         last_scene_frame = frame_idx
+
+            if frame_idx > 0 and frame_idx % log_interval == 0:
+                pct = min(100, int(frame_idx * sample_rate * 100 / num_frames))
+                logger.info("Scene detection [decord GPU]: %d%% (%d/%d frames, %d scenes found)", pct, i, num_frames, len(times) - 1)
 
             prev_hist = curr_hist
             frame_idx += 1
@@ -233,6 +238,10 @@ def _pytorch_scenes(video_path: Path, threshold: float = 0.3, min_scene_len: flo
                         times.append(pts)
                         last_scene_frame = frame_idx
 
+            if frame_idx > 0 and frame_idx % 50 == 0:
+                pct = min(100, int(frame_idx * sample_rate * 100 / (duration * fps)))
+                logger.info("Scene detection [FFmpeg pipe]: %d%% (%d frames, %d scenes found)", pct, frame_idx, len(times) - 1)
+
             prev_hist = curr_hist
             frame_idx += 1
 
@@ -326,9 +335,13 @@ def detect_scenes(video_path: Path, scenes_dir: Path) -> list[SceneInfo]:
 
 def extract_keyframes(video_path: Path, scenes: list[SceneInfo], keyframes_dir: Path) -> list[SceneInfo]:
     keyframes_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Extracting %d keyframes via FFmpeg%s...", len(scenes), " GPU" if settings.GPU_ENABLED else "")
+    total = len(scenes)
+    logger.info("Extracting %d keyframes via FFmpeg%s...", total, " GPU" if settings.GPU_ENABLED else "")
+    log_interval = max(1, total // 10)
 
-    for scene in scenes:
+    for idx, scene in enumerate(scenes):
+        if idx > 0 and idx % log_interval == 0:
+            logger.info("Keyframe extraction: %d%% (%d/%d)", int(idx * 100 / total), idx, total)
         mid_time = (scene.start_time + scene.end_time) / 2.0
         kf_path = keyframes_dir / f"scene_{scene.scene_index:05d}.jpg"
 
