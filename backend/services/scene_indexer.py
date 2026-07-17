@@ -55,27 +55,21 @@ def _qwen_scene_summary(keyframe_paths: list[str]) -> SceneIndex | None:
     ]
     text = qwen_processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-    processed = [qwen_processor.image_processor(images=[img]) for img in images]
-
-    pv_tensors = [torch.tensor(p["pixel_values"].tolist(), dtype=torch.float16) for p in processed]
-    vis = {"pixel_values": torch.cat(pv_tensors, dim=0)}
-
-    if "image_grid_thw" in processed[0]:
-        gthw_tensors = [torch.tensor(p["image_grid_thw"].tolist(), dtype=torch.long) for p in processed]
-        vis["image_grid_thw"] = torch.cat(gthw_tensors, dim=0)
-
-    tok = qwen_processor.tokenizer(text=[text], padding=True, return_tensors="pt")
-    inputs = {"pixel_values": vis["pixel_values"].to(device)}
-    if "image_grid_thw" in vis:
-        inputs["image_grid_thw"] = vis["image_grid_thw"].to(device)
-    inputs["input_ids"] = tok["input_ids"].to(device)
-    inputs["attention_mask"] = tok["attention_mask"].to(device)
+    inputs_np = qwen_processor(text=[text], images=images)
+    inputs = {}
+    for key in ["input_ids", "attention_mask"]:
+        if key in inputs_np:
+            inputs[key] = torch.tensor(inputs_np[key].tolist(), dtype=torch.long).to(device)
+    if "pixel_values" in inputs_np:
+        inputs["pixel_values"] = torch.tensor(inputs_np["pixel_values"].tolist(), dtype=torch.float16).to(device)
+    if "image_grid_thw" in inputs_np:
+        inputs["image_grid_thw"] = torch.tensor(inputs_np["image_grid_thw"].tolist(), dtype=torch.long).to(device)
 
     with torch.no_grad():
-        generated_ids = qwen_model.generate(**inputs, max_new_tokens=256, temperature=0.1, do_sample=False)
+        generated_ids = qwen_model.generate(**inputs, max_new_tokens=256, do_sample=False)
 
     generated_ids_trimmed = [
-        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
     ]
     output_text = qwen_processor.batch_decode(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
