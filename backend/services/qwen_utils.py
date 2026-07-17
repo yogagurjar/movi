@@ -72,6 +72,11 @@ def load_qwen():
             torch_dtype=torch.float16,
         )
         _qwen_processor = AutoProcessor.from_pretrained(settings.QWEN_MODEL_NAME)
+        try:
+            _qwen_model = torch.compile(_qwen_model, mode="reduce-overhead")
+            logger.info("torch.compile applied successfully")
+        except Exception as e:
+            logger.warning("torch.compile failed (continuing without): %s", e)
     except Exception as e:
         logger.warning("Failed to load Qwen model: %s", e)
         raise
@@ -85,6 +90,37 @@ def resize_for_qwen(image_path: str, max_size: int = 1024):
         ratio = min(max_size / w, max_size / h)
         img = img.resize((int(w * ratio), int(h * ratio)), PIL.Image.LANCZOS)
     return img
+
+
+def resize_for_qwen_batch(image_paths: list[str], max_size: int = 1024):
+    import PIL.Image
+    imgs = []
+    for path in image_paths:
+        p = Path(path)
+        if p.exists():
+            img = PIL.Image.open(path).convert("RGB")
+            w, h = img.size
+            if w > max_size or h > max_size:
+                ratio = min(max_size / w, max_size / h)
+                img = img.resize((int(w * ratio), int(h * ratio)), PIL.Image.LANCZOS)
+            imgs.append(img)
+
+    if not imgs:
+        return []
+
+    max_w = max(img.width for img in imgs)
+    max_h = max(img.height for img in imgs)
+
+    padded = []
+    for img in imgs:
+        if img.width != max_w or img.height != max_h:
+            canvas = PIL.Image.new("RGB", (max_w, max_h), (0, 0, 0))
+            canvas.paste(img, ((max_w - img.width) // 2, (max_h - img.height) // 2))
+            padded.append(canvas)
+        else:
+            padded.append(img)
+
+    return padded
 
 
 def get_model():

@@ -13,7 +13,7 @@ from backend.models import (
     TimelineSegment,
     VerificationResult,
 )
-from backend.services.qwen_utils import get_device, load_qwen, resize_for_qwen, get_model
+from backend.services.qwen_utils import get_device, load_qwen, resize_for_qwen_batch, get_model
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +31,8 @@ def _qwen_verify_event(
     results: list[tuple[int, float, str]] = []
     for scene_idx, scene_index in candidates:
         try:
-            images = []
-            for kfp in scene_index.keyframe_paths:
-                p = Path(kfp)
-                if p.exists():
-                    images.append(resize_for_qwen(kfp))
+            kfp_list = [str(kfp) for kfp in scene_index.keyframe_paths if Path(kfp).exists()]
+            images = resize_for_qwen_batch(kfp_list)
 
             if not images:
                 results.append((scene_idx, 0.0, "no_images"))
