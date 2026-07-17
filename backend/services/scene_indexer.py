@@ -57,13 +57,17 @@ def _qwen_scene_summary(keyframe_paths: list[str]) -> SceneIndex | None:
 
     inputs_np = qwen_processor(text=[text], images=images)
     inputs = {}
+
+    def _to_list(v):
+        return v.tolist() if hasattr(v, "tolist") else v
+
     for key in ["input_ids", "attention_mask"]:
         if key in inputs_np:
-            inputs[key] = torch.tensor(inputs_np[key].tolist(), dtype=torch.long).to(device)
+            inputs[key] = torch.tensor(_to_list(inputs_np[key]), dtype=torch.long).to(device)
     if "pixel_values" in inputs_np:
-        inputs["pixel_values"] = torch.tensor(inputs_np["pixel_values"].tolist(), dtype=torch.float16).to(device)
+        inputs["pixel_values"] = torch.tensor(_to_list(inputs_np["pixel_values"]), dtype=torch.float16).to(device)
     if "image_grid_thw" in inputs_np:
-        inputs["image_grid_thw"] = torch.tensor(inputs_np["image_grid_thw"].tolist(), dtype=torch.long).to(device)
+        inputs["image_grid_thw"] = torch.tensor(_to_list(inputs_np["image_grid_thw"]), dtype=torch.long).to(device)
 
     with torch.no_grad():
         generated_ids = qwen_model.generate(**inputs, max_new_tokens=256, do_sample=False)
