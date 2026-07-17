@@ -82,25 +82,41 @@ def _qwen_scene_summary(keyframe_paths: list[str]) -> SceneIndex | None:
     )[0]
 
     import re
-    json_match = re.search(r'\{[^{}]*\}', output_text)
-    if json_match:
-        try:
-            parsed = json.loads(json_match.group())
-            return SceneIndex(
-                scene_index=0,
-                start_time=0,
-                end_time=0,
-                duration=0,
-                keyframe_paths=keyframe_paths,
-                summary=parsed.get("summary", ""),
-                characters=parsed.get("characters", []),
-                location=parsed.get("location", ""),
-                emotion=parsed.get("emotion", ""),
-                objects=parsed.get("objects", []),
-                actions=parsed.get("actions", []),
-            )
-        except Exception:
-            pass
+
+    text = output_text.strip()
+
+    # Try markdown code block first: ```json ... ``` or ``` ... ```
+    code_block = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+    if code_block:
+        text = code_block.group(1).strip()
+
+    # Find outermost { ... } with nesting support
+    start = text.find('{')
+    if start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed = json.loads(text[start:i + 1])
+                        return SceneIndex(
+                            scene_index=0,
+                            start_time=0,
+                            end_time=0,
+                            duration=0,
+                            keyframe_paths=keyframe_paths,
+                            summary=parsed.get("summary", ""),
+                            characters=parsed.get("characters", []),
+                            location=parsed.get("location", ""),
+                            emotion=parsed.get("emotion", ""),
+                            objects=parsed.get("objects", []),
+                            actions=parsed.get("actions", []),
+                        )
+                    except Exception:
+                        break
     return None
 
 
