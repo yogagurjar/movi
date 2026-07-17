@@ -13,7 +13,7 @@ from backend.services.qwen_utils import get_device, load_qwen, resize_for_qwen_b
 logger = logging.getLogger(__name__)
 
 _embed_model = None
-SCENE_BATCH_SIZE = 2
+SCENE_BATCH_SIZE = 1
 
 
 def _load_embed_model():
@@ -178,43 +178,40 @@ def index_scenes(scenes: list, scene_index_dir: Path, movie_transcript: str = ""
     total = len(scenes)
     log_interval = max(1, total // 10)
 
-    for batch_start in range(0, len(scenes), SCENE_BATCH_SIZE):
-        batch = scenes[batch_start:batch_start + SCENE_BATCH_SIZE]
-        batch_results = _qwen_scene_summary_batch(batch)
-
-        for j, scene in enumerate(batch):
-            keyframe_paths = getattr(scene, 'keyframe_paths', [])
-            result = batch_results[j]
-            if result is None:
-                result = SceneIndex(
-                    scene_index=scene.scene_index,
-                    start_time=scene.start_time,
-                    end_time=scene.end_time,
-                    duration=scene.duration,
-                    keyframe_paths=keyframe_paths,
-                    summary="",
-                    characters=[],
-                    location="",
-                    emotion="",
-                    objects=[],
-                    actions=[],
-                )
-
-            result.scene_index = scene.scene_index
-            result.start_time = scene.start_time
-            result.end_time = scene.end_time
-            result.duration = scene.duration
-            scene_indices.append(result)
-
-            i = batch_start + j
-            if i < 3:
-                logger.info("Scene[%d]: %s | chars=%s | loc=%s | emotion=%s",
-                            scene.scene_index, result.summary[:60], result.characters,
-                            result.location, result.emotion)
-
-        i = batch_start + len(batch)
-        if i > 0 and (batch_start == 0 or i % log_interval == 0):
+    for i, scene in enumerate(scenes):
+        if i > 0 and i % log_interval == 0:
             logger.info("Indexing scenes: %d%% (%d/%d)", int(i * 100 / total), i, total)
+
+        keyframe_paths = getattr(scene, 'keyframe_paths', [])
+        if not keyframe_paths:
+            continue
+
+        result = _qwen_scene_summary(keyframe_paths)
+        if result is None:
+            result = SceneIndex(
+                scene_index=scene.scene_index,
+                start_time=scene.start_time,
+                end_time=scene.end_time,
+                duration=scene.duration,
+                keyframe_paths=keyframe_paths,
+                summary="",
+                characters=[],
+                location="",
+                emotion="",
+                objects=[],
+                actions=[],
+            )
+
+        result.scene_index = scene.scene_index
+        result.start_time = scene.start_time
+        result.end_time = scene.end_time
+        result.duration = scene.duration
+        scene_indices.append(result)
+
+        if i < 3:
+            logger.info("Scene[%d]: %s | chars=%s | loc=%s | emotion=%s",
+                        scene.scene_index, result.summary[:60], result.characters,
+                        result.location, result.emotion)
 
     logger.info("Scene indexing complete: %d scenes indexed", len(scene_indices))
 
