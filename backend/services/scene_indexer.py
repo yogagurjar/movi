@@ -13,7 +13,7 @@ from backend.services.qwen_utils import get_device, load_qwen, resize_for_qwen_b
 logger = logging.getLogger(__name__)
 
 _embed_model = None
-SCENE_BATCH_SIZE = 4
+SCENE_BATCH_SIZE = 2
 
 
 def _load_embed_model():

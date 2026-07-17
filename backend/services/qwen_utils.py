@@ -72,11 +72,6 @@ def load_qwen():
             torch_dtype=torch.float16,
         )
         _qwen_processor = AutoProcessor.from_pretrained(settings.QWEN_MODEL_NAME)
-        try:
-            _qwen_model = torch.compile(_qwen_model, mode="reduce-overhead")
-            logger.info("torch.compile applied successfully")
-        except Exception as e:
-            logger.warning("torch.compile failed (continuing without): %s", e)
     except Exception as e:
         logger.warning("Failed to load Qwen model: %s", e)
         raise
