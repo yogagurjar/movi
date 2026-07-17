@@ -57,12 +57,12 @@ def _qwen_scene_summary(keyframe_paths: list[str]) -> SceneIndex | None:
 
     processed = [qwen_processor.image_processor(images=[img]) for img in images]
 
-    pv_lists = [p["pixel_values"].tolist() for p in processed]
-    vis = {"pixel_values": torch.tensor(pv_lists, dtype=torch.float16)}
+    pv_tensors = [torch.tensor(p["pixel_values"].tolist(), dtype=torch.float16) for p in processed]
+    vis = {"pixel_values": torch.cat(pv_tensors, dim=0)}
 
     if "image_grid_thw" in processed[0]:
-        gthw_lists = [p["image_grid_thw"].tolist() for p in processed]
-        vis["image_grid_thw"] = torch.tensor(gthw_lists, dtype=torch.long)
+        gthw_tensors = [torch.tensor(p["image_grid_thw"].tolist(), dtype=torch.long) for p in processed]
+        vis["image_grid_thw"] = torch.cat(gthw_tensors, dim=0)
 
     tok = qwen_processor.tokenizer(text=[text], padding=True, return_tensors="pt")
     inputs = {"pixel_values": vis["pixel_values"].to(device)}
