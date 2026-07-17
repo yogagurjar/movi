@@ -55,10 +55,14 @@ def _qwen_scene_summary(keyframe_paths: list[str]) -> SceneIndex | None:
     ]
     text = qwen_processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-    processed = [qwen_processor.image_processor(images=[img], return_tensors="pt") for img in images]
-    vis = {"pixel_values": torch.cat([p["pixel_values"] for p in processed], dim=0)}
+    processed = [qwen_processor.image_processor(images=[img]) for img in images]
+    vis = {"pixel_values": torch.tensor(
+        np.concatenate([p["pixel_values"] for p in processed], axis=0), dtype=torch.float16
+    )}
     if "image_grid_thw" in processed[0]:
-        vis["image_grid_thw"] = torch.cat([p["image_grid_thw"] for p in processed], dim=0)
+        vis["image_grid_thw"] = torch.tensor(
+            np.concatenate([p["image_grid_thw"] for p in processed], axis=0), dtype=torch.long
+        )
 
     tok = qwen_processor.tokenizer(text=[text], padding=True, return_tensors="pt")
     inputs = {"pixel_values": vis["pixel_values"].to(device)}
